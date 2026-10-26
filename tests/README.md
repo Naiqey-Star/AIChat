@@ -19,8 +19,10 @@ The native UI still requires an in-game check: open F9, switch all six tabs, sub
 
 ## Local Validation (2026-10-26)
 
-- Release and Console configurations build without warnings or errors. The suite includes 40 offline checks, including eight resize-geometry cases.
-- SophNet `DeepSeek-V4.1-Flash-1017` returned HTTP 200 with a valid structured reply using the production builder/parser.
+- Release and Console configurations build without warnings or errors. The suite includes 42 offline checks, including eight resize-geometry cases and two legacy-prompt override checks.
+- SophNet `DeepSeek-V4.1-Flash-1017` returned HTTP 200 with a valid structured reply using the production builder/parser, even when the persona requested the legacy `|||` format. The combined offline/live run passed all 45 checks.
 - In-game text input, Enter submission, text-only reply, subtitle display, masked credentials, configuration categories, width editing, and save feedback were exercised. The user confirmed manual window dragging and reported no significant issue with the deployed frame-resize update; automated drag injection was inconclusive.
 - Settings were inspected in a small 681x495 game window; the earlier chat UI was also inspected in a maximized window. Existing API, persona, and other configuration values were restored and compared with the backup.
-- End-to-end microphone, ASR, barge-in, and real TTS playback remain unverified. The VAD checks use synthetic samples, not microphone audio. The new release-packaging steps have not been run on GitHub Actions.
+- A subsequent in-game send/receive test reproduced blocked typing while UnityExplorer was visible. Hiding it with F7 restored Chinese text input. Both button submission and Enter submission returned actual JSON replies from SophNet; `A|||B` and quoted text were preserved in the displayed reply.
+- The user also confirmed that hiding UnityExplorer restores keyboard input. This is an input-focus compatibility issue, not an API failure.
+- End-to-end microphone, ASR, barge-in, and real TTS playback remain unverified. The VAD checks use synthetic samples, not microphone audio. Release-package validation is tracked separately from these local checks.

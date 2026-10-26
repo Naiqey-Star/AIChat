@@ -49,9 +49,12 @@ internal static class Program
             Check(LLMUtils.ParseStandardResponse("{\"emotion\":\"Think\",\"voice_text\":\"\",\"subtitle_text\":\"hello\"}").Success, "Text-only structured reply");
 
             var context = new LLMRequestContext(apiUrl: "https://www.sophnet.com/api/open-apis/v1/chat/completions", modelName: "DeepSeek-V4.1-Flash-1017",
-                systemPrompt: "Be a friendly fictional companion.", userPrompt: special,
+                systemPrompt: "Be a friendly fictional companion. Response format MUST be: [Emotion] ||| JAPANESE TEXT ||| CHINESE TRANSLATION", userPrompt: special,
                 thinkMode: ThinkMode.Disable, fixApiPathForThinkMode: true, useStructuredResponse: true);
             var body = JObject.Parse(LLMUtils.BuildRequestBody(context));
+            string effectivePrompt = (string)body["messages"][0]["content"];
+            Check(effectivePrompt.StartsWith(context.SystemPrompt) && effectivePrompt.IndexOf("replace all earlier output-format rules", StringComparison.Ordinal) > effectivePrompt.IndexOf("|||", StringComparison.Ordinal), "JSON contract follows and overrides the legacy persona format");
+            Check(!context.SystemPrompt.Contains("replace all earlier output-format rules"), "Building a JSON request preserves the saved persona");
             Check((string)body["messages"][1]["content"] == special, "Request round trip");
             Check((string)body["response_format"]["type"] == "json_object" && !(bool)body["stream"], "JSON and nonstreaming request");
             Check((string)body["thinking"]["type"] == "disabled" && body["think"] == null, "DeepSeek thinking format");
@@ -120,7 +123,7 @@ internal static class Program
         string key = Environment.GetEnvironmentVariable("SOPHNET_API_KEY");
         if (string.IsNullOrWhiteSpace(key)) throw new Exception("SOPHNET_API_KEY is not set.");
         var context = new LLMRequestContext(apiUrl: "https://www.sophnet.com/api/open-apis/v1/chat/completions", modelName: model,
-            systemPrompt: "You are a fictional companion. Speak Japanese and subtitle in Chinese. Use the emotion Greeting.",
+            systemPrompt: "You are a fictional companion. Speak Japanese and subtitle in Chinese. Use the emotion Greeting. Response format MUST be: [Emotion] ||| JAPANESE TEXT ||| CHINESE TRANSLATION",
             userPrompt: "Say a brief hello and include a quoted word.", thinkMode: ThinkMode.Disable, useStructuredResponse: true);
         var body = JObject.Parse(LLMUtils.BuildRequestBody(context));
         body["max_tokens"] = 256;
@@ -131,6 +134,8 @@ internal static class Program
             Check(response.IsSuccessStatusCode, "SophNet HTTP " + (int)response.StatusCode);
             string raw = response.Content.ReadAsStringAsync().GetAwaiter().GetResult();
             string content = ResponseParser.ExtractContentRegex(raw);
+            var structuredReply = JObject.Parse(content);
+            Check(structuredReply["emotion"]?.Type == JTokenType.String && structuredReply["voice_text"]?.Type == JTokenType.String && structuredReply["subtitle_text"]?.Type == JTokenType.String, "SophNet returns actual JSON despite the legacy persona format");
             var reply = LLMUtils.ParseStandardResponse(content);
             Check(reply.Success && reply.SubtitleText.Length > 0 && reply.VoiceText.Length > 0, "SophNet production serializer/parser round trip: " + model);
             Console.WriteLine("Reply: " + reply.SubtitleText);
