@@ -45,6 +45,7 @@ namespace AIChat.Unity
             RectTransform rt = go.AddComponent<RectTransform>();
             rt.anchorMin = Vector2.zero; rt.anchorMax = Vector2.one; rt.sizeDelta = Vector2.zero;
             Text txt = go.AddComponent<Text>();
+            txt.supportRichText = false;
             txt.fontSize = 26;
             txt.alignment = TextAnchor.UpperCenter;
             txt.horizontalOverflow = HorizontalWrapMode.Wrap;

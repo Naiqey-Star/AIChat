@@ -22,7 +22,7 @@ using AIChat.Utils;
 namespace ChillAIMod
 {
     [BepInPlugin("com.username.chillaimod", "Chill AI Mod", AIChat.Version.VersionString)]
-    public class AIMod : BaseUnityPlugin, IAIChatPublicApi
+    public partial class AIMod : BaseUnityPlugin, IAIChatPublicApi
     {
         public static AIMod Instance { get; private set; }
 
@@ -34,6 +34,9 @@ namespace ChillAIMod
         public bool IsContinuousCallActive => _continuousCallActive;
         // ================= 【配置项】 =================
         private ConfigEntry<bool> _useOllama;
+        private ConfigEntry<bool> _structuredResponse;
+        private ConfigEntry<bool> _enableTts;
+        private ConfigEntry<bool> _useNativeUi;
         private ConfigEntry<ThinkMode> _thinkModeConfig;
         private ConfigEntry<string> _apiKeyConfig;
         private ConfigEntry<string> _modelConfig;
@@ -54,6 +57,8 @@ namespace ChillAIMod
         // --- 新增窗口大小配置 ---
         private ConfigEntry<float> _windowWidthConfig;
         private ConfigEntry<float> _windowHeightConfig;
+        private ConfigEntry<float> _nativeWindowWidth;
+        private ConfigEntry<float> _nativeWindowHeight;
 
         // --- 新增音量配置 ---
         private ConfigEntry<float> _voiceVolumeConfig;
@@ -214,6 +219,11 @@ Response format MUST be:
             
             // --- LLM 配置 ---
             _useOllama = Config.Bind("1. LLM", "Use_Ollama_API", false, "使用 Ollama API");
+            _structuredResponse = Config.Bind("1. LLM", "StructuredResponse", true, "使用 JSON 回复（emotion / voice_text / subtitle_text），不支持 JSON 模式的服务可关闭此项");
+            _enableTts = Config.Bind("2. TTS", "EnableTTS", true, "启用语音合成，关闭后仅显示文字");
+            _useNativeUi = Config.Bind("3. UI", "UseNativeUI", true, "使用游戏风格聊天窗口");
+            _nativeWindowWidth = Config.Bind("3. UI", "NativeWindowWidth", 610f, "游戏风格窗口宽度，最小 500");
+            _nativeWindowHeight = Config.Bind("3. UI", "NativeWindowHeight", 748f, "游戏风格窗口高度，最小 500");
             _thinkModeConfig = Config.Bind("1. LLM", "ThinkMode", ThinkMode.Default, "深度思考模式 (Default/Enable/Disable)");
             _chatApiUrlConfig = Config.Bind("1. LLM", "API_URL",
                 "https://openrouter.ai/api/v1/chat/completions",
@@ -346,6 +356,7 @@ Response format MUST be:
 
         void Update()
         {
+            UpdateNativeUI();
             // 自动连接游戏核心
             if (GameBridge._heroineService == null && Time.frameCount % 100 == 0) GameBridge.FindHeroineService();
 
@@ -392,7 +403,7 @@ Response format MUST be:
                 }
             }
 
-            if (_showInputWindow)
+            if (_showInputWindow && !NativeConsoleVisible)
             {
                 // --- 1. 拖拽调整大小逻辑 ---
                 if (_isResizing)
@@ -534,7 +545,7 @@ Response format MUST be:
             string status = GameBridge._heroineService != null ? "🟢 核心已连接" : "🔴 正在寻找核心...";
             GUILayout.Label(status);
 
-            string ttsStatus = _isTTSServiceReady ? "🟢 TTS 服务已就绪" : "🔴 正在等待 TTS 服务启动...";
+            string ttsStatus = !_enableTts.Value ? "纯文字模式" : _isTTSServiceReady ? "TTS 服务已就绪" : "正在等待 TTS 服务启动...";
             GUILayout.Label(ttsStatus);
 
             // 设置展开按钮 (全宽)
@@ -565,10 +576,11 @@ Response format MUST be:
                 {
                     GUILayout.Space(5);
                     _useOllama.Value = GUILayout.Toggle(_useOllama.Value, "使用 Ollama API", GUILayout.Height(elementHeight), GUILayout.MinWidth(50f));
+                    _structuredResponse.Value = GUILayout.Toggle(_structuredResponse.Value, "JSON 结构化回复", GUILayout.Height(elementHeight));
                     
                     // 【深度思考模式选项】
                     GUILayout.Space(5);
-                    GUILayout.Label("指定深度思考（在请求体添加 think 键值对，目前仅 Ollama 支持）：");
+                    GUILayout.Label("指定深度思考（Ollama / DeepSeek）：");
                     string[] thinkModeOptions = { "不指定", "启用", "禁用" };
                     int currentMode = (int)_thinkModeConfig.Value;
                     int newMode = GUILayout.SelectionGrid(currentMode, thinkModeOptions, 3, GUILayout.Height(elementHeight));
@@ -581,7 +593,7 @@ Response format MUST be:
                     _chatApiUrlConfig.Value = GUILayout.TextField(_chatApiUrlConfig.Value, GUILayout.Height(elementHeight), GUILayout.MinWidth(50f));
                     if (!_useOllama.Value) {
                         GUILayout.Label("API Key：");
-                        _apiKeyConfig.Value = GUILayout.TextField(_apiKeyConfig.Value, GUILayout.Height(elementHeight), GUILayout.MinWidth(50f));
+                        _apiKeyConfig.Value = GUILayout.PasswordField(_apiKeyConfig.Value, '*', GUILayout.Height(elementHeight), GUILayout.MinWidth(50f));
                     }
                     GUILayout.Label("模型名称：");
                     _modelConfig.Value = GUILayout.TextField(_modelConfig.Value, GUILayout.Height(elementHeight), GUILayout.MinWidth(50f));
@@ -608,6 +620,7 @@ Response format MUST be:
                 if (_showTtsSettings)
                 {
                     GUILayout.Space(5);
+                    _enableTts.Value = GUILayout.Toggle(_enableTts.Value, "启用语音合成");
                     GUILayout.Label("TTS 服务 URL：");
                     _sovitsUrlConfig.Value = GUILayout.TextField(_sovitsUrlConfig.Value);
 
@@ -1079,6 +1092,8 @@ Response format MUST be:
         IEnumerator AIProcessRoutine(string prompt, string inputSource = "ui")
         {
             _isProcessing = true;
+            _nativeWindow?.AddMessage("你", prompt);
+            _nativeStatus = "正在思考…";
             var apiResult = new AIChatApiConversationResult
             {
                 Success = false,
@@ -1161,7 +1176,8 @@ Response format MUST be:
                 ThinkMode = _thinkModeConfig.Value,
                 HierarchicalMemory = _experimentalMemoryConfig.Value ? _hierarchicalMemory : null,
                 LogHeader = "AIChat",
-                FixApiPathForThinkMode = _fixApiPathForThinkModeConfig.Value
+                FixApiPathForThinkMode = _fixApiPathForThinkModeConfig.Value,
+                UseStructuredResponse = _structuredResponse.Value && !_useFinetunedModel.Value
             };
 
             string fullResponse = "";
@@ -1180,7 +1196,12 @@ Response format MUST be:
                         ? ResponseParser.ExtractContentFromOllama(rawResponse)
                         : ResponseParser.ExtractContentRegex(rawResponse);
                     Log.Info($"[DEBUG] Extracted content: {fullResponse}");
-                    success = true;
+                    success = !string.IsNullOrWhiteSpace(fullResponse);
+                    if (!success)
+                    {
+                        errCode = -12;
+                        errMsg = "API 未返回可显示的正文，请检查模型输出和 token 限制。";
+                    }
                 },
                 (errorMsg, responseCode) =>
                 {
@@ -1206,9 +1227,7 @@ Response format MUST be:
                 yield return new WaitForSecondsRealtime(3.0f);
 
                 // 手动执行清理工作，恢复游戏原本状态
-                UIHelper.RestoreUiStatus(uiStatusMap, myTextObj, originalTextObj);
-                // 静音模式下重新隐藏游戏 UI
-                if (wasStoryUIHidden && _storySystemUI != null) _storySystemUI.SetActive(false);
+                CleanupConversationUI();
                 _isProcessing = false;
                 PublishConversationResult(apiResult);
                 yield break;
@@ -1235,6 +1254,7 @@ Response format MUST be:
                 apiResult.EmotionTag = emotionTag;
                 apiResult.VoiceText = voiceText;
                 apiResult.SubtitleText = subtitleText;
+                _nativeWindow?.AddMessage("聪音", subtitleText);
                 AddToMemorySystem("User", prompt);
                 AddToMemorySystem("AI", parsedResponse.Success ? $"[{emotionTag}] {voiceText}" : $"[格式错误] {fullResponse}");
 
@@ -1247,8 +1267,9 @@ Response format MUST be:
                 bool isJapanese = _japaneseCheckConfig.Value ? Regex.IsMatch(voiceText, @"[\u3040-\u309F\u30A0-\u30FF]") : true ;
                 Log.Info($"isJapanese: {isJapanese} (japaneseCheck: {_japaneseCheckConfig.Value})");
 
-                if (!string.IsNullOrEmpty(voiceText) && isJapanese)
+                if (_enableTts.Value && !string.IsNullOrEmpty(voiceText) && isJapanese)
                 {
+                    _nativeStatus = "正在合成语音…";
                     myText.text = "message is sending through cyber space";
                     AudioClip downloadedClip = null;
                     apiResult.TtsAttempted = true;
@@ -1284,14 +1305,14 @@ Response format MUST be:
                         myText.color = Color.white;
 
                         // 正常播放
-                        yield return StartCoroutine(PlayNativeAnimation(emotionTag, downloadedClip));
+                        yield return ShowReply(emotionTag, downloadedClip, subtitleText);
                     }
                     else
                     {
-                        myText.text = "Voice Failed (TTS Error)";
                         // 语音失败时，至少做个动作显示字幕
                         myText.text = subtitleText;
-                        yield return StartCoroutine(PlayNativeAnimation(emotionTag, null)); // 传 null 进去
+                        myText.color = Color.white;
+                        yield return ShowReply(emotionTag, null, subtitleText);
                     }
                 }
                 else
@@ -1299,13 +1320,13 @@ Response format MUST be:
                     // 【静音模式】
                     // 如果格式错了，或者不是日语，我们就只显示字幕、做动作，不发声音
                     // 这样比听到 AI 用奇怪的调子读中文要好得多
-                    Log.Warning("跳过 TTS：文本为空或非日语");
+                    Log.Info("跳过 TTS：语音合成已关闭、文本为空或未通过语言检测");
 
                     myText.text = subtitleText;
                     myText.color = Color.white;
 
                     // 修改 PlayNativeAnimation 支持无音频模式 (见下方)
-                    yield return StartCoroutine(PlayNativeAnimation(emotionTag, null));
+                    yield return ShowReply(emotionTag, null, subtitleText);
                 }
             }
 
@@ -1318,9 +1339,7 @@ Response format MUST be:
                 yield break;
             }
 
-            UIHelper.RestoreUiStatus(uiStatusMap, myTextObj, originalTextObj);
-            // 静音模式下重新隐藏游戏 UI
-            if (wasStoryUIHidden && _storySystemUI != null) _storySystemUI.SetActive(false);
+            CleanupConversationUI();
             _isProcessing = false;
             PublishConversationResult(apiResult);
         }
@@ -1352,14 +1371,23 @@ Response format MUST be:
             ));
         }
 
+        IEnumerator ShowReply(string emotion, AudioClip clip, string subtitle)
+        {
+            _nativeStatus = clip != null ? "正在回复…" : "文字回复";
+            float deadline = Time.unscaledTime + SubtitleTiming.Calculate(subtitle, clip != null ? clip.length : 0f);
+            yield return PlayNativeAnimation(emotion, clip);
+            while (!_abortCurrentConversation && Time.unscaledTime < deadline) yield return null;
+        }
+
         IEnumerator PlayNativeAnimation(string emotion, AudioClip voiceClip)
         {
-            if (GameBridge._heroineService == null || GameBridge._changeAnimSmoothMethod == null) yield break;
+            bool canAnimate = GameBridge._heroineService != null && GameBridge._changeAnimSmoothMethod != null;
+            if (!canAnimate) Log.Warning("[动画] 游戏接口不可用，继续显示字幕和播放语音");
 
             Log.Info($"[动画] 执行: {emotion}");
-            float clipDuration = (voiceClip != null) ? voiceClip.length : 3.0f;
+            float clipDuration = (voiceClip != null) ? voiceClip.length : 0f;
             // 1. 归位 (除了喝茶)
-            if (emotion != "Drink" && emotion != "Relaxed")
+            if (canAnimate && emotion != "Drink" && emotion != "Relaxed")
             {
                 GameBridge.CallNativeChangeAnim(250);
                 float elapsed = 0f;
@@ -1384,7 +1412,7 @@ Response format MUST be:
                 // 没声音就不播了，只做动作
             }
             // === 特殊流程：Greeting/Wave 需要看向玩家 ===
-            if (emotion == "Greeting" || emotion == "Wave")
+            if (canAnimate && (emotion == "Greeting" || emotion == "Wave"))
             {
                 var greetAnim = GameBridge.PickRandomAnimation("Greeting");
                 GameBridge.PlayAnimation(greetAnim);
@@ -1411,7 +1439,7 @@ Response format MUST be:
             // === 通用流程：随机选动画并执行 ===
             string pickedAnim = GameBridge.PickRandomAnimation(emotion);
             Log.Info($"[动画] {emotion} -> {pickedAnim}");
-            GameBridge.PlayAnimation(pickedAnim);
+            if (canAnimate) GameBridge.PlayAnimation(pickedAnim);
 
             // 等待语音播完，增加0.5秒缓冲，以防止过早判断AI动作结束
             float playElapsed = 0f;
@@ -1428,7 +1456,7 @@ Response format MUST be:
                 Log.Warning("等待结束，强制停止语音播放");
                 _audioSource.Stop();
             }
-            GameBridge.RestoreLookAt();
+            if (canAnimate) GameBridge.RestoreLookAt();
             _isAISpeaking = false;
         }
 
@@ -1493,6 +1521,7 @@ Response format MUST be:
         /// </summary>
         IEnumerator ASRWorkflow(byte[] wavData, string inputSource = "asr")
         {
+            _nativeStatus = "正在识别语音…";
             _isProcessing = true; // 锁定 UI
             string recognizedResult = "";
 
@@ -1551,15 +1580,7 @@ Response format MUST be:
             _enableVoiceCallConfig.Value = true;
             Config.Save();
 
-            _vad = new VoiceActivityDetector(
-                RecordingFrequency,
-                _vadThresholdConfig.Value,
-                _vadMinSpeechConfig.Value,
-                _vadSilenceConfig.Value,
-                MaxRecordingSeconds,
-                0.02f,
-                _vadEndThresholdRatioConfig.Value);
-            _vad.SpeechSegmentReady += OnVadSpeechSegmentReady;
+            RebuildVoiceActivityDetector();
 
             if (!_isRecording)
             {
@@ -1567,6 +1588,15 @@ Response format MUST be:
             }
 
             Log.Info("[VoiceCall] 持续通话模式已开启");
+        }
+
+        private void RebuildVoiceActivityDetector()
+        {
+            if (_vad != null) _vad.SpeechSegmentReady -= OnVadSpeechSegmentReady;
+            _vad = new VoiceActivityDetector(RecordingFrequency, _vadThresholdConfig.Value,
+                _vadMinSpeechConfig.Value, _vadSilenceConfig.Value, MaxRecordingSeconds,
+                0.02f, _vadEndThresholdRatioConfig.Value);
+            _vad.SpeechSegmentReady += OnVadSpeechSegmentReady;
         }
 
         void StopContinuousCall()
@@ -1900,7 +1930,7 @@ Response format MUST be:
                 for (int i = 0; i < rightIcons.transform.childCount; i++)
                 {
                     RectTransform childRect = rightIcons.transform.GetChild(i).GetComponent<RectTransform>();
-                    if (childRect != null)
+                    if (childRect != null && childRect != rectTransform)
                     {
                         children.Add(childRect);
                     }
@@ -1910,9 +1940,9 @@ Response format MUST be:
                 children.Sort((a, b) => a.anchoredPosition.y.CompareTo(b.anchoredPosition.y));
                 
                 // 如果有其他按钮，将新按钮放在最下面
-                if (children.Count > 1) // 至少有一个其他按钮
+                if (children.Count > 0)
                 {
-                    RectTransform lowestButton = children[3]; // 第一个是最下面的
+                    RectTransform lowestButton = children[0];
                     float spacing = 10f;
                     rectTransform.anchoredPosition = new Vector2(
                         lowestButton.anchoredPosition.x,
@@ -2006,7 +2036,7 @@ Response format MUST be:
                         if (storyUI != null) _storySystemUI = storyUI.gameObject;
                     }
                 }
-                if (_storySystemUI != null) _storySystemUI.SetActive(false);
+                if (!_isProcessing && !_isAISpeaking && _storySystemUI != null) _storySystemUI.SetActive(false);
             }
             catch (Exception ex)
             {
@@ -2048,6 +2078,7 @@ Response format MUST be:
 
         private void PublishConversationResult(AIChatApiConversationResult result)
         {
+            _nativeStatus = string.Empty;
             try
             {
                 ConversationCompleted?.Invoke(result);
@@ -2074,6 +2105,14 @@ Response format MUST be:
             return new Dictionary<string, ConfigEntryBase>(StringComparer.OrdinalIgnoreCase)
             {
                 ["Use_Ollama_API"] = _useOllama,
+                ["StructuredResponse"] = _structuredResponse,
+                ["EnableTTS"] = _enableTts,
+                ["UseNativeUI"] = _useNativeUi,
+                ["NativeWindowWidth"] = _nativeWindowWidth,
+                ["NativeWindowHeight"] = _nativeWindowHeight,
+                ["UseFinetunedModel"] = _useFinetunedModel,
+                ["MuteGameNativeAudio"] = _muteGameNativeAudio,
+                ["AddChatButton"] = _addChatButtonConfig,
                 ["ThinkMode"] = _thinkModeConfig,
                 ["API_URL"] = _chatApiUrlConfig,
                 ["API_Key"] = _apiKeyConfig,
@@ -2149,6 +2188,20 @@ Response format MUST be:
                 switch (key)
                 {
                     case "Use_Ollama_API": _useOllama.Value = bool.Parse(value); break;
+                    case "StructuredResponse": _structuredResponse.Value = bool.Parse(value); break;
+                    case "EnableTTS": _enableTts.Value = bool.Parse(value); break;
+                    case "UseNativeUI": _useNativeUi.Value = bool.Parse(value); break;
+                    case "NativeWindowWidth": _nativeWindowWidth.Value = Mathf.Max(500f, ParseFiniteNumber(value)); break;
+                    case "NativeWindowHeight": _nativeWindowHeight.Value = Mathf.Max(500f, ParseFiniteNumber(value)); break;
+                    case "UseFinetunedModel": _useFinetunedModel.Value = bool.Parse(value); break;
+                    case "MuteGameNativeAudio":
+                        _muteGameNativeAudio.Value = bool.Parse(value);
+                        ApplyGameAudioMute(_muteGameNativeAudio.Value);
+                        break;
+                    case "AddChatButton":
+                        _addChatButtonConfig.Value = bool.Parse(value);
+                        if (_aiChatButton != null) _aiChatButton.SetActive(_addChatButtonConfig.Value);
+                        break;
                     case "ThinkMode": _thinkModeConfig.Value = (ThinkMode)Enum.Parse(typeof(ThinkMode), value, true); break;
                     case "API_URL": _chatApiUrlConfig.Value = value ?? string.Empty; break;
                     case "API_Key": _apiKeyConfig.Value = value ?? string.Empty; break;
@@ -2165,26 +2218,35 @@ Response format MUST be:
                     case "TargetLang": _targetLangConfig.Value = value ?? string.Empty; break;
                     case "AudioPathCheck": _audioPathCheckConfig.Value = bool.Parse(value); break;
                     case "JapaneseCheck": _japaneseCheckConfig.Value = bool.Parse(value); break;
-                    case "VoiceVolume": _voiceVolumeConfig.Value = Mathf.Clamp(float.Parse(value), 0f, 1f); _audioSource.volume = _voiceVolumeConfig.Value; break;
+                    case "VoiceVolume": _voiceVolumeConfig.Value = Mathf.Clamp(ParseFiniteNumber(value), 0f, 1f); _audioSource.volume = _voiceVolumeConfig.Value; break;
                     case "SystemPrompt": _personaConfig.Value = value ?? string.Empty; break;
-                    case "ExperimentalMemory": _experimentalMemoryConfig.Value = bool.Parse(value); break;
+                    case "ExperimentalMemory":
+                        _experimentalMemoryConfig.Value = bool.Parse(value);
+                        if (_experimentalMemoryConfig.Value && _hierarchicalMemory == null) InitializeHierarchicalMemory();
+                        break;
                     case "ReverseEnterBehavior": _reverseEnterBehaviorConfig.Value = bool.Parse(value); break;
-                    case "BackgroundOpacity": _backgroundOpacity.Value = Mathf.Clamp(float.Parse(value), 0f, 1f); break;
+                    case "BackgroundOpacity": _backgroundOpacity.Value = Mathf.Clamp(ParseFiniteNumber(value), 0f, 1f); break;
                     case "ShowWindowTitle": _showWindowTitle.Value = bool.Parse(value); break;
-                    case "WindowWidth": _windowWidthConfig.Value = Mathf.Max(300f, float.Parse(value)); break;
-                    case "WindowHeightBase": _windowHeightConfig.Value = Mathf.Max(100f, float.Parse(value)); break;
-                    case "Enable_VoiceCall": _enableVoiceCallConfig.Value = bool.Parse(value); break;
-                    case "Vad_EnergyThreshold": _vadThresholdConfig.Value = Mathf.Max(0.0001f, float.Parse(value)); break;
-                    case "Vad_MinSpeechSeconds": _vadMinSpeechConfig.Value = Mathf.Max(0.05f, float.Parse(value)); break;
-                    case "Vad_SilenceSeconds": _vadSilenceConfig.Value = Mathf.Max(0.1f, float.Parse(value)); break;
-                    case "Vad_EndThresholdRatio": _vadEndThresholdRatioConfig.Value = Mathf.Clamp(float.Parse(value), 0.1f, 1.0f); break;
+                    case "WindowWidth": _windowWidthConfig.Value = Mathf.Max(300f, ParseFiniteNumber(value)); break;
+                    case "WindowHeightBase": _windowHeightConfig.Value = Mathf.Max(100f, ParseFiniteNumber(value)); break;
+                    case "Enable_VoiceCall":
+                        bool enabled = bool.Parse(value);
+                        if (enabled && !_continuousCallActive) return TryStartContinuousCall(out error);
+                        if (!enabled && _continuousCallActive) return TryStopContinuousCall(out error);
+                        _enableVoiceCallConfig.Value = enabled;
+                        break;
+                    case "Vad_EnergyThreshold": _vadThresholdConfig.Value = Mathf.Max(0.0001f, ParseFiniteNumber(value)); break;
+                    case "Vad_MinSpeechSeconds": _vadMinSpeechConfig.Value = Mathf.Max(0.05f, ParseFiniteNumber(value)); break;
+                    case "Vad_SilenceSeconds": _vadSilenceConfig.Value = Mathf.Max(0.1f, ParseFiniteNumber(value)); break;
+                    case "Vad_EndThresholdRatio": _vadEndThresholdRatioConfig.Value = Mathf.Clamp(ParseFiniteNumber(value), 0.1f, 1.0f); break;
                     case "VoiceCall_BargeIn": _voiceCallBargeInConfig.Value = bool.Parse(value); break;
-                    case "VoiceCall_ResumeDelay": _voiceCallResumeDelayConfig.Value = Mathf.Max(0f, float.Parse(value)); break;
+                    case "VoiceCall_ResumeDelay": _voiceCallResumeDelayConfig.Value = Mathf.Max(0f, ParseFiniteNumber(value)); break;
                     default:
                         error = $"unknown config key: {key}";
                         return false;
                 }
 
+                if (_continuousCallActive && key.StartsWith("Vad_", StringComparison.Ordinal)) RebuildVoiceActivityDetector();
                 return true;
             }
             catch (Exception ex)
@@ -2192,6 +2254,13 @@ Response format MUST be:
                 error = ex.Message;
                 return false;
             }
+        }
+
+        private static float ParseFiniteNumber(string value)
+        {
+            float number = float.Parse(value);
+            if (float.IsNaN(number) || float.IsInfinity(number)) throw new FormatException("请输入有限数值");
+            return number;
         }
 
         public bool TrySaveConfig(out string error)

@@ -10,6 +10,7 @@
     <AssemblyName>AIChat</AssemblyName>
     <FileAlignment>512</FileAlignment>
     <Deterministic>true</Deterministic>
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
     <PlatformTarget>AnyCPU</PlatformTarget>
     <ProjectGuid>{2E59843C-DE00-4628-A540-43F2449EA8B7}</ProjectGuid>
   </PropertyGroup>
@@ -46,6 +47,7 @@
 
   <ItemGroup Condition=" '$(Configuration)' == 'Console' ">
     <Compile Remove="$(MSBuildProjectDirectory)\AIMod.cs" />
+    <Compile Remove="$(MSBuildProjectDirectory)\AIMod.NativeUI.cs" />
   </ItemGroup>
 
   <ItemGroup Condition=" '$(Configuration)' != 'Console' ">
@@ -58,6 +60,10 @@
 
   <ItemGroup>
     <EmbeddedResource Include="ai_chat.png" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
   </ItemGroup>
 
   <ItemGroup>

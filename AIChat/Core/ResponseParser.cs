@@ -1,5 +1,7 @@
 ﻿using AIChat.Utils;
 using System;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
@@ -12,23 +14,15 @@ namespace AIChat.Core
     {
         public static string EscapeJson(string s)
         {
-            return s?.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\r", "").Replace("\n", "\\n") ?? "";
+            string encoded = JsonConvert.ToString(s ?? string.Empty);
+            return encoded.Substring(1, encoded.Length - 2);
         }
 
         public static string ExtractContentFromOllama(string jsonResponse)
         {
             try
             {
-                // 使用 SingleLine 模式让 . 匹配换行符，避免 \n 截断
-                var match = Regex.Match(jsonResponse, "\"content\"\\s*:\\s*\"(.*?)\"(?=\\s*[,}])", RegexOptions.Singleline);
-                if (match.Success)
-                {
-                    string content = Regex.Unescape(match.Groups[1].Value);
-                    // 去掉内容中的换行符（模型偶尔在标签后输出换行）
-                    content = content.Replace("\n", " ").Replace("\r", "").Trim();
-                    return content;
-                }
-                return null;
+                return ReadString(JObject.Parse(jsonResponse)["message"]?["content"]);
             }
             catch (Exception ex)
             {
@@ -39,14 +33,28 @@ namespace AIChat.Core
 
         public static string ExtractContentRegex(string json)
         {
-            try { var match = Regex.Match(json, "\"content\"\\s*:\\s*\"(.*?)\""); return match.Success ? Regex.Unescape(match.Groups[1].Value) : null; }
-            catch { return null; }
+            // Keep the public method name for existing integrations.
+            if (string.IsNullOrWhiteSpace(json)) return null;
+            try
+            {
+                var choices = JObject.Parse(json)["choices"] as JArray;
+                var first = choices?.First as JObject;
+                var message = first?["message"] as JObject;
+                return ReadString(message?["content"]);
+            }
+            catch (JsonException) { return null; }
         }
-        // 简易 JSON 提取辅助函数
+
+        private static string ReadString(JToken token)
+        {
+            return token?.Type == JTokenType.String ? (string)token : null;
+        }
+
         public static string ExtractJsonValue(string json, string key)
         {
-            var match = Regex.Match(json, $"\"{key}\"\\s*:\\s*\"(.*?)\"");
-            return match.Success ? Regex.Unescape(match.Groups[1].Value) : "";
+            if (string.IsNullOrWhiteSpace(json) || string.IsNullOrEmpty(key)) return string.Empty;
+            try { return ReadString(JObject.Parse(json)[key]) ?? string.Empty; }
+            catch (JsonException) { return string.Empty; }
         }
         // =========================================================================================
         // 【新增辅助函数】确保对话文本（字幕）强制换行，以防过长溢出屏幕。

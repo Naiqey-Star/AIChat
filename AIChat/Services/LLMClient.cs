@@ -19,6 +19,7 @@ namespace AIChat.Services
                 byte[] bodyRaw = Encoding.UTF8.GetBytes(jsonBody);
                 request.uploadHandler = new UploadHandlerRaw(bodyRaw);
                 request.downloadHandler = new DownloadHandlerBuffer();
+                request.timeout = 120;
                 request.SetRequestHeader("Content-Type", "application/json");
                 if (!requestContext.UseLocalOllama)
                 {

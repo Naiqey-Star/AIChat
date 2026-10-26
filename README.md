@@ -6,7 +6,7 @@
 - 使用任意兼容的 LLM API（如 OpenRouter/OpenAI/Ollama）生成对话文本。
 - 使用自部署的 GPT-SoVITS 的 WebAPI v2 生成语音。
 - 支持语音输入（由 Faster Whisper ASR 模型实现语音识别）。
-- UI 内可调节音量、窗口尺寸、保存配置，支持拖拽调整大小与精确数值输入。
+- 聊天和完整设置使用游戏风格界面，支持窗口拖动、尺寸与音量调节、配置保存。
 
 ## 安装说明
 ### 安装 Mod 本体
@@ -25,7 +25,7 @@
 
 3. 安装 Mod
    - **请务必确保上一步已生成目录结构。否则，说明 BepInEx 前置未正确加载（在解决此问题之前，继续下一步是无意义的）。**
-   - 将 `AIChat.dll` 放入 `BepInEx` 下的 `plugins` 目录中。
+   - 将 `AIChat.dll` 和压缩包中的 `Newtonsoft.Json.dll` 一起放入 `BepInEx` 下的 `plugins` 目录中。
    - 打开游戏，按 F9 键或 F10 键调出 Mod 的界面。
    - 在 LLM 配置中，填写 API URL 与 API Key 以及模型名称并保存，此时就可以在“与聪音对话”的文本框里进行对话了（仅文字；下一节将配置语音）。
      - API URL 示例：
@@ -107,17 +107,34 @@
 
 ### 游戏内界面的使用
 - 打开/关闭控制台（Mod 界面）：按 F9 或 F10（切换），或点击右边 AI 字样的按钮。
-- 拖拽右下角调整窗口大小；放开鼠标会把新尺寸保存到配置。
-- 点击“保存所有配置”，会把设置项保存到 BepInEx 的配置文件中。
+- 默认使用游戏风格窗口，复用游戏已经加载的字体和界面素材；拖动标题栏移动窗口，拖动四条边或四个角调整尺寸。边框悬停时高亮，松开后自动保存尺寸，最小尺寸及屏幕边界会限制拖动范围。
+- “对话”页保留本次游戏运行中的最近 60 条消息，支持文本发送、录音和持续通话。设置也使用游戏风格界面，分为“连接”“语音”“通话”“界面”“人设”，API Key 默认遮蔽。
+- “界面”页可调整原生窗口大小、透明度和输入行为。`NativeWindowWidth` / `NativeWindowHeight` 独立于旧窗口尺寸。仅在需要兼容回退时，在配置文件设置 `UseNativeUI = false` 使用旧界面。
+- “人设”页支持多行编辑、记忆开关以及带确认的清理/恢复操作。新界面切换微调模型模式不会自动覆盖当前人设，需要时自行调整提示词。
+- 若安装了 UnityExplorer 且输入框无法接收文字，先按它的默认快捷键 `F7` 隐藏调试界面，再输入。
+- 点击“保存配置”（旧界面为“保存所有配置”），会把设置项保存到 BepInEx 的配置文件中。
   - 位置：在游戏目录下的 `BepInEx/config/com.username.chillaimod.cfg`
   - 关于各配置项的说明，参见其中的注释。
 
 ### AI 输出格式与系统提示词
-为了正确解析 AI 返回的结果，其输出的格式必须严格遵守以下三段格式（中间用 `|||` 分隔）
+默认开启 `StructuredResponse`，请求模型返回 JSON。HTTP 请求与响应均使用 JSON 解析器处理，可正确保留引号、换行、反斜杠以及文本中的 `|||`：
+
+```json
+{"emotion":"Greeting","voice_text":"こんにちは！","subtitle_text":"你好！"}
+```
+
+三个字段均为字符串；`emotion` 是不带括号的动作标签，`voice_text` 用于合成语音，`subtitle_text` 是显示的字幕。插件会在当前人设后追加 JSON 格式要求，不覆盖已有的人设配置。微调模型模式继续使用原格式。
+
+OpenAI 兼容接口发送 `response_format: {"type":"json_object"}`，Ollama 原生接口发送 `format: "json"`。如果服务不支持 JSON 模式，可关闭 `StructuredResponse`。解析器仍兼容旧版三段回复：
+
 ```plain
 [Emotion] ||| JAPANESE TEXT ||| CHINESE TRANSLATION
 ```
 其中 Emotion 可选值为：Happy、Confused、Sad、Fun、Agree、Drink、Wave、Think
+
+`Greeting` 与 `Relaxed` 等现有动作标签也可继续使用。关闭 `EnableTTS` 可直接进行纯文字对话；字幕按文字长度停留至少 4 秒，长回复最多按 45 秒估算阅读时间，有语音时还会保证覆盖音频时长。动画接口未加载也不会跳过字幕等待。
+
+SophNet 配置示例：API URL 为 `https://www.sophnet.com/api/open-apis/v1/chat/completions`；模型填写账号服务列表中的模型 ID，例如 `DeepSeek-V4.1-Flash-1017`。取消勾选 Ollama。DeepSeek 思考开关使用 `thinking.type`，不会将云端地址改写为 Ollama 路径。
 
 示例
 ```plain
@@ -129,7 +146,7 @@
 
 > Mod 具体的工作流程是：
 > - 用户在控制台输入文本后点击`发送`，将系统提示词和用户文本发送至 LLM 的 API，再处理返回的响应。
-> - 如果响应符合 `[Emotion] ||| 日语 ||| 中文` 格式：
+> - 如果响应符合 JSON 或兼容的三段格式：
 >   - 从 `[Emotion]` 提取情感标签。
 >   - 用日语部分请求 TTS 服务，得到合成的语音。
 >   - 播放语音，同时根据情感标签驱动角色动作，显示中文字幕（自动换行处理）。

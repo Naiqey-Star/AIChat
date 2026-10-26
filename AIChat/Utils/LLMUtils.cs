@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using System.IO;
 using System.Linq;
 using System.Text;
@@ -23,6 +25,7 @@ namespace AIChat.Utils
         public bool UseLocalOllama;
         public bool LogApiRequestBody;
         public bool FixApiPathForThinkMode;
+        public bool UseStructuredResponse;
         public ThinkMode ThinkMode;
         public HierarchicalMemory HierarchicalMemory;
         public string LogHeader;
@@ -38,7 +41,8 @@ namespace AIChat.Utils
             ThinkMode thinkMode = ThinkMode.Default,
             HierarchicalMemory hierarchicalMemory = null,
             string logHeader = "LLMRequest",
-            bool fixApiPathForThinkMode = false
+            bool fixApiPathForThinkMode = false,
+            bool useStructuredResponse = false
         )
         {
             ApiUrl = apiUrl;
@@ -52,6 +56,7 @@ namespace AIChat.Utils
             HierarchicalMemory = hierarchicalMemory;
             LogHeader = logHeader;
             FixApiPathForThinkMode = fixApiPathForThinkMode;
+            UseStructuredResponse = useStructuredResponse;
         }
     }
 
@@ -76,6 +81,29 @@ namespace AIChat.Utils
         public static LLMStandardResponse ParseStandardResponse(string response)
         {
             LLMStandardResponse ret = new LLMStandardResponse(false, "Think", "", response);
+            if (string.IsNullOrWhiteSpace(response)) return ret;
+            string json = response.Trim();
+            if (json.StartsWith("```", StringComparison.Ordinal) && json.EndsWith("```", StringComparison.Ordinal))
+            {
+                int firstLine = json.IndexOf('\n');
+                if (firstLine >= 0) json = json.Substring(firstLine + 1, json.Length - firstLine - 4).Trim();
+            }
+            if (json.StartsWith("{", StringComparison.Ordinal))
+            {
+                try
+                {
+                    var reply = JObject.Parse(json);
+                    if (reply["emotion"]?.Type != JTokenType.String ||
+                        reply["voice_text"]?.Type != JTokenType.String ||
+                        reply["subtitle_text"]?.Type != JTokenType.String) return ret;
+                    string emotion = ((string)reply["emotion"]).Trim().Trim('[', ']');
+                    string voice = ((string)reply["voice_text"]).Trim();
+                    string subtitle = ((string)reply["subtitle_text"]).Trim();
+                    if (!Regex.IsMatch(emotion, @"^[A-Za-z][A-Za-z0-9_]*$") || string.IsNullOrEmpty(subtitle)) return ret;
+                    return new LLMStandardResponse(true, emotion, voice, subtitle);
+                }
+                catch (JsonException) { return ret; }
+            }
             // 按 ||| 分割（注意：有些模型可能会用单个 | ）
             string[] parts = response.Split(new string[] { "|||" }, StringSplitOptions.None);
 
@@ -146,19 +174,35 @@ namespace AIChat.Utils
             // 【集成分层记忆】获取带记忆上下文的提示词
             string userPromptWithMemory = GetContextWithMemory(requestContext.HierarchicalMemory, requestContext.UserPrompt);
 
-            string jsonBody;
-            string extraJson = requestContext.UseLocalOllama ? $@",""stream"": false" : "";
-            // 【深度思考参数】
-            extraJson += GetThinkParameterJson(requestContext.ThinkMode);
+            string systemPrompt = requestContext.SystemPrompt ?? string.Empty;
+            if (requestContext.UseStructuredResponse)
+                systemPrompt += "\nFor this reply, replace all earlier output-format rules with this JSON contract. " +
+                    "Return exactly one JSON object with three string fields: emotion (tag name without brackets), " +
+                    "voice_text (spoken reply, keeping the requested spoken language), subtitle_text (translated subtitle, " +
+                    "keeping the requested subtitle language). No markdown fences or surrounding text. " +
+                    "Example: {\"emotion\":\"Greeting\",\"voice_text\":\"こんにちは！\",\"subtitle_text\":\"你好！\"}";
 
-            if (requestContext.ModelName.Contains("gemma")) {
-                // 将 persona 作为背景信息放在 user 消息的最前面
-                string finalPrompt = $"[System Instruction]\n{requestContext.SystemPrompt}\n\n[User Message]\n{userPromptWithMemory}";
-                jsonBody = $@"{{ ""model"": ""{requestContext.ModelName}"", ""messages"": [ {{ ""role"": ""user"", ""content"": ""{ResponseParser.EscapeJson(finalPrompt)}"" }} ]{extraJson} }}";
-            } else {
-                // Gemini 或 Ollama (如果是 Llama3 等) 通常支持 system role
-                jsonBody = $@"{{ ""model"": ""{requestContext.ModelName}"", ""messages"": [ {{ ""role"": ""system"", ""content"": ""{ResponseParser.EscapeJson(requestContext.SystemPrompt)}"" }}, {{ ""role"": ""user"", ""content"": ""{ResponseParser.EscapeJson(userPromptWithMemory)}"" }} ]{extraJson} }}";
+            var messages = new JArray();
+            if ((requestContext.ModelName ?? string.Empty).IndexOf("gemma", StringComparison.OrdinalIgnoreCase) >= 0)
+                messages.Add(new JObject { ["role"] = "user", ["content"] = $"[System Instruction]\n{systemPrompt}\n\n[User Message]\n{userPromptWithMemory}" });
+            else
+            {
+                messages.Add(new JObject { ["role"] = "system", ["content"] = systemPrompt });
+                messages.Add(new JObject { ["role"] = "user", ["content"] = userPromptWithMemory ?? string.Empty });
             }
+            var body = new JObject { ["model"] = requestContext.ModelName, ["messages"] = messages, ["stream"] = false };
+            if (requestContext.UseStructuredResponse)
+            {
+                if (requestContext.UseLocalOllama) body["format"] = "json";
+                else body["response_format"] = new JObject { ["type"] = "json_object" };
+            }
+            if (requestContext.ThinkMode != ThinkMode.Default)
+            {
+                if (requestContext.UseLocalOllama) body["think"] = requestContext.ThinkMode == ThinkMode.Enable;
+                else if ((requestContext.ModelName ?? string.Empty).IndexOf("deepseek", StringComparison.OrdinalIgnoreCase) >= 0)
+                    body["thinking"] = new JObject { ["type"] = requestContext.ThinkMode == ThinkMode.Enable ? "enabled" : "disabled" };
+            }
+            string jsonBody = body.ToString(Formatting.None);
 
             Log.Info($"[记忆系统] 启用状态: {requestContext.HierarchicalMemory != null}");
             // 【日志】打印完整的请求体（如果启用）
@@ -170,23 +214,6 @@ namespace AIChat.Utils
             }
 
             return jsonBody;
-        }
-
-        /// <summary>
-        /// 获取深度思考参数的 JSON 字符串
-        /// </summary>
-        private static string GetThinkParameterJson(ThinkMode thinkMode)
-        {
-            if (thinkMode == ThinkMode.Enable)
-            {
-                return @",""think"": true";
-            }
-            else if (thinkMode == ThinkMode.Disable)
-            {
-                return @",""think"": false";
-            }
-            // Default 模式不添加 think 参数
-            return "";
         }
 
         private static string GetContextWithMemory(HierarchicalMemory hierarchicalMemory, string currentPrompt)
@@ -213,8 +240,8 @@ namespace AIChat.Utils
         public static string GetApiUrlForThinkMode(LLMRequestContext requestContext)
         {
             string baseUrl = requestContext.ApiUrl;
-            // 如果启用了API路径修正，且think模式不是Default，需要使用Ollama原生API (/api/chat)
-            if (requestContext.FixApiPathForThinkMode && requestContext.ThinkMode != ThinkMode.Default)
+            // The Ollama response parser expects its native /api/chat envelope.
+            if (requestContext.UseLocalOllama && requestContext.FixApiPathForThinkMode)
             {
                 // 将 /v1/chat/completions 替换为 /api/chat
                 if (baseUrl.Contains("/v1/chat/completions"))

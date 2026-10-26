@@ -77,6 +77,8 @@ jobs:
         run: |
           dotnet build -c Release
           cp AIChat/bin/Release/net472/AIChat.dll build-resource/assets/
+          cp AIChat/bin/Release/net472/Newtonsoft.Json.dll build-resource/assets/
+          cp "$HOME/.nuget/packages/newtonsoft.json/13.0.3/LICENSE.md" build-resource/assets/Newtonsoft.Json.LICENSE.md
 
       - name: Add README.html
         run: build-resource/readme/build.sh
