@@ -416,7 +416,7 @@ Write every reply as a sequence of SHORT lines. Each line is exactly:
                 // 语音播完，立即归还控制权
                 if (!shouldTalk)
                 {
-                    _isAISpeaking = false;
+                    StopTalking();
                     GameBridge._cachedAnimator.SetBool("Enable_Talk", false);
                 }
             }
@@ -1415,7 +1415,7 @@ Write every reply as a sequence of SHORT lines. Each line is exactly:
                     elapsed += Time.unscaledDeltaTime;
                 }
             }
-            if (_abortCurrentConversation) { _isAISpeaking = false; yield break; }
+            if (_abortCurrentConversation) { StopTalking(); yield break; }
             if (voiceClip != null)
             {
                 // 2. 播放语音 + 动作
@@ -1450,7 +1450,7 @@ Write every reply as a sequence of SHORT lines. Each line is exactly:
                 }
                 GameBridge.CallNativeChangeAnim(250);
                 GameBridge.RestoreLookAt();
-                _isAISpeaking = false;
+                StopTalking();
                 yield break;
             }
 
@@ -1475,7 +1475,7 @@ Write every reply as a sequence of SHORT lines. Each line is exactly:
                 _audioSource.Stop();
             }
             GameBridge.RestoreLookAt();
-            _isAISpeaking = false;
+            StopTalking();
         }
 
         // ================= 【逐句合成 / 播放】 =================
@@ -1488,6 +1488,21 @@ Write every reply as a sequence of SHORT lines. Each line is exactly:
         bool SegmentSessionAlive(int token)
         {
             return token == _segmentSessionToken && !_abortCurrentConversation;
+        }
+
+        /// <summary>
+        /// 关闭「正在说话」状态，并同步清掉 Animator 的 Enable_Talk。
+        /// 只把 _isAISpeaking 置 false 是不够的：Update 里清理动画的分支要求
+        /// _isAISpeaking 仍为 true 才会执行，先置 false 会让口型动作一直循环。
+        /// </summary>
+        void StopTalking()
+        {
+            _isAISpeaking = false;
+            if (GameBridge._cachedAnimator != null)
+            {
+                try { GameBridge._cachedAnimator.SetBool("Enable_Talk", false); }
+                catch { }
+            }
         }
 
         /// <summary>
@@ -1625,7 +1640,7 @@ Write every reply as a sequence of SHORT lines. Each line is exactly:
                 if (!SegmentSessionAlive(token))
                 {
                     if (_audioSource != null && _audioSource.isPlaying) _audioSource.Stop();
-                    _isAISpeaking = false;
+                    StopTalking();
                     yield break;
                 }
 
@@ -1661,7 +1676,7 @@ Write every reply as a sequence of SHORT lines. Each line is exactly:
                         yield return null;
                     }
                     if (_audioSource.isPlaying) _audioSource.Stop();
-                    _isAISpeaking = false;
+                    StopTalking();
 
                     yield return new WaitForSecondsRealtime(0.15f);
                 }
@@ -1680,7 +1695,7 @@ Write every reply as a sequence of SHORT lines. Each line is exactly:
                 }
             }
 
-            _isAISpeaking = false;
+            StopTalking();
             if (GameBridge._heroineService != null) GameBridge.RestoreLookAt();
         }
 
@@ -1919,7 +1934,7 @@ Write every reply as a sequence of SHORT lines. Each line is exactly:
             {
                 _audioSource.Stop();
             }
-            _isAISpeaking = false;
+            StopTalking();
 
             if (_currentConversationCoroutine != null)
             {
@@ -2614,3 +2629,4 @@ Write every reply as a sequence of SHORT lines. Each line is exactly:
         }
     }
 }
+
