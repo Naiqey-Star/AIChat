@@ -35,7 +35,7 @@ namespace AIChat.Core
     /// </summary>
     public static class SegmentParser
     {
-        public const int MaxSegments = 12;
+        public const int MaxSegments = 80;
 
         public static List<ChatSegment> Parse(string response)
         {

@@ -175,7 +175,9 @@ and I (the player) am focusing on my work/study.
 【CRITICAL FORMAT RULE】
 Write every reply as a sequence of SHORT lines. Each line is exactly:
 [Emotion] ||| JAPANESE TEXT ||| CHINESE TRANSLATION
-- There is NO limit on the number of lines. Chat replies need 1-4 lines; when the player asks for a story, keep writing for as many lines as the story needs (10, 30, 60 lines are all fine). Never compress a story into a summary.
+- Reply length follows what the player asked for; there is no fixed number of lines and no upper limit.
+- Short chat: use as few lines as the answer needs, usually 1 to 3.
+- Story, narration, or any request to tell a story or keep going: you MUST actually tell it. Write at least 15 lines, keep writing until the scene reaches a natural end, and never stop after 4 lines. Do not summarise, do not announce the story and then stop, and do not cut it short because the reply is getting long.
 - Each line is ONE short spoken sentence, about 25 Chinese characters. Longer is acceptable only if it is still a single sentence.
 - A comma or a period ENDS a sentence, so it ends a line. Split long sentences into separate lines instead of using commas.
 - Exception: when listing several names or things, the enumeration comma (、) may stay inside one line.
@@ -212,7 +214,9 @@ and I (the player) am focusing on my work/study.
 【CRITICAL FORMAT RULE】
 Write every reply as a sequence of SHORT lines. Each line is exactly:
 [Emotion] ||| JAPANESE TEXT ||| CHINESE TRANSLATION
-- There is NO limit on the number of lines. Chat replies need 1-4 lines; when the player asks for a story, keep writing for as many lines as the story needs (10, 30, 60 lines are all fine). Never compress a story into a summary.
+- Reply length follows what the player asked for; there is no fixed number of lines and no upper limit.
+- Short chat: use as few lines as the answer needs, usually 1 to 3.
+- Story, narration, or any request to tell a story or keep going: you MUST actually tell it. Write at least 15 lines, keep writing until the scene reaches a natural end, and never stop after 4 lines. Do not summarise, do not announce the story and then stop, and do not cut it short because the reply is getting long.
 - Each line is ONE short spoken sentence, about 25 Chinese characters. Longer is acceptable only if it is still a single sentence.
 - A comma or a period ENDS a sentence, so it ends a line. Split long sentences into separate lines instead of using commas.
 - Exception: when listing several names or things, the enumeration comma (、) may stay inside one line.
