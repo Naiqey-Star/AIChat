@@ -58,6 +58,17 @@ namespace ChillAIMod
         // --- 新增音量配置 ---
         private ConfigEntry<float> _voiceVolumeConfig;
 
+        // --- 逐句合成配置 ---
+        private ConfigEntry<bool> _segmentModeConfig;
+        private ConfigEntry<int> _segmentBufferConfig;
+        private ConfigEntry<float> _segmentPrebufferMaxWaitConfig;
+        private ConfigEntry<float> _segmentTimeoutConfig;
+        private ConfigEntry<int> _segmentRetriesConfig;
+        private ConfigEntry<int> _segmentParallelConfig;
+
+        // 每次对话一个令牌：打断/新对话时自增，旧的合成协程据此自行退出
+        private int _segmentSessionToken = 0;
+
         // --- 新增：实验性分层记忆系统 ---
         private ConfigEntry<bool> _experimentalMemoryConfig;
         private HierarchicalMemory _hierarchicalMemory;
@@ -162,8 +173,20 @@ We are 'co-working' online: you are writing your novel at your desk,
 and I (the player) am focusing on my work/study.
 
 【CRITICAL FORMAT RULE】
-Response format MUST be:
+Write every reply as a sequence of SHORT lines. Each line is exactly:
 [Emotion] ||| JAPANESE TEXT ||| CHINESE TRANSLATION
+- There is NO limit on the number of lines. Chat replies need 1-4 lines; when the player asks for a story, keep writing for as many lines as the story needs (10, 30, 60 lines are all fine). Never compress a story into a summary.
+- Each line is ONE short spoken sentence, about 25 Chinese characters. Longer is acceptable only if it is still a single sentence.
+- A comma or a period ENDS a sentence, so it ends a line. Split long sentences into separate lines instead of using commas.
+- Exception: when listing several names or things, the enumeration comma (、) may stay inside one line.
+- The CHINESE column must be a faithful translation of the JAPANESE column in the SAME line: same meaning, same details, same emotion. Never summarise, shorten the content, or write something different.
+- All lines must continue one another into a coherent flow: each line advances the same scene, keeps the same characters and the same tense, and never repeats or jumps.
+
+【TIC RULE - the cat verbal tic must always be stable】
+- Japanese: every sentence ends with the tic 「にゃ」 GLUED to the last word, e.g. 「〜だにゃ」「〜するにゃ」「〜だよにゃ」.
+- Never write 「にゃ」 as a standalone word or on its own line. Never place it after a comma or a period. Never write meow, nya, nyan or any other spelling.
+- Chinese: the matching line ends with 「喵」, e.g. 「…喵」. Never write meow in the Chinese column, and never let 喵 stand alone.
+- Exactly one tic per sentence, at the very end. Never double it (にゃにゃ).
 
 【Available Emotions】
 [Happy] - Smiling, happy about progress.
@@ -187,8 +210,20 @@ We are 'co-working' online: you are writing your novel at your desk,
 and I (the player) am focusing on my work/study.
 
 【CRITICAL FORMAT RULE】
-Response format MUST be:
+Write every reply as a sequence of SHORT lines. Each line is exactly:
 [Emotion] ||| JAPANESE TEXT ||| CHINESE TRANSLATION
+- There is NO limit on the number of lines. Chat replies need 1-4 lines; when the player asks for a story, keep writing for as many lines as the story needs (10, 30, 60 lines are all fine). Never compress a story into a summary.
+- Each line is ONE short spoken sentence, about 25 Chinese characters. Longer is acceptable only if it is still a single sentence.
+- A comma or a period ENDS a sentence, so it ends a line. Split long sentences into separate lines instead of using commas.
+- Exception: when listing several names or things, the enumeration comma (、) may stay inside one line.
+- The CHINESE column must be a faithful translation of the JAPANESE column in the SAME line: same meaning, same details, same emotion. Never summarise, shorten the content, or write something different.
+- All lines must continue one another into a coherent flow: each line advances the same scene, keeps the same characters and the same tense, and never repeats or jumps.
+
+【TIC RULE - the cat verbal tic must always be stable】
+- Japanese: every sentence ends with the tic 「にゃ」 GLUED to the last word, e.g. 「〜だにゃ」「〜するにゃ」「〜だよにゃ」.
+- Never write 「にゃ」 as a standalone word or on its own line. Never place it after a comma or a period. Never write meow, nya, nyan or any other spelling.
+- Chinese: the matching line ends with 「喵」, e.g. 「…喵」. Never write meow in the Chinese column, and never let 喵 stand alone.
+- Exactly one tic per sentence, at the very end. Never double it (にゃにゃ).
 
 【Available Emotions】
 [Happy] - Smiling, happy about progress.
@@ -237,6 +272,20 @@ Response format MUST be:
             _targetLangConfig = Config.Bind("2. TTS", "TargetLang", "ja", "合成语音语言 (text_lang)");
             _japaneseCheckConfig = Config.Bind("2. TTS", "JapaneseCheck", true, "检测合成语音文本是否为日文（当合成语音语言为 ja 时可防止发出怪声）");
             _voiceVolumeConfig = Config.Bind("2. TTS", "VoiceVolume", 1.0f, "语音音量 (0.0 - 1.0)");
+
+            // --- 逐句合成 / 逐句字幕 ---
+            _segmentModeConfig = Config.Bind("2. TTS", "SegmentMode", true,
+                "逐句合成与逐句字幕：AI 回复被切成短句，每句单独配音并在播放时同步显示字幕");
+            _segmentBufferConfig = Config.Bind("2. TTS", "SegmentBufferCount", 2,
+                "开播前预合成的句数（1-5）：越大越连贯，但第一句出声前的等待也更长");
+            _segmentPrebufferMaxWaitConfig = Config.Bind("2. TTS", "SegmentPrebufferMaxSeconds", 6f,
+                "预缓冲最长等待秒数：超过就先开口播已就绪的句子，避免一直干等");
+            _segmentTimeoutConfig = Config.Bind("2. TTS", "SegmentTimeoutSeconds", 30f,
+                "单句合成的超时时间（秒）");
+            _segmentRetriesConfig = Config.Bind("2. TTS", "SegmentRetries", 2,
+                "单句合成失败后的重试次数（1-4）");
+            _segmentParallelConfig = Config.Bind("2. TTS", "SegmentParallelRequests", 2,
+                "同时向 TTS 服务发出的合成请求数（1-3）：2 通常能快 15%~30%，再多收益递减");
 
             // --- 界面配置 ---
             // 我们希望窗口宽度是屏幕的 1/3，高度是屏幕的 1/3 (或者你喜欢的比例)
@@ -1226,87 +1275,80 @@ Response format MUST be:
             // 4. 处理回复并下载语音
             if (!string.IsNullOrEmpty(fullResponse))
             {
-                LLMStandardResponse parsedResponse = LLMUtils.ParseStandardResponse(fullResponse);
-                string emotionTag = parsedResponse.EmotionTag;
-                string voiceText = parsedResponse.VoiceText;
-                string subtitleText = parsedResponse.SubtitleText;
-                apiResult.Success = parsedResponse.Success;
+                bool formatOk;
+                List<ChatSegment> segments = SegmentParser.Parse(fullResponse, out formatOk);
+                if (segments.Count == 0)
+                {
+                    segments.Add(new ChatSegment
+                    {
+                        EmotionTag = "Think",
+                        VoiceText = string.Empty,
+                        SubtitleText = fullResponse.Trim(),
+                    });
+                }
+
+                // 关掉逐句模式时合并回整段，行为与旧版一致
+                if (!_segmentModeConfig.Value && segments.Count > 1)
+                {
+                    string mergedVoice = string.Join("", segments.ConvertAll(s => s.VoiceText).ToArray());
+                    string mergedSub = string.Join("", segments.ConvertAll(s => s.SubtitleText).ToArray());
+                    segments = new List<ChatSegment>
+                    {
+                        new ChatSegment
+                        {
+                            EmotionTag = segments[0].EmotionTag,
+                            VoiceText = mergedVoice,
+                            SubtitleText = mergedSub,
+                        }
+                    };
+                }
+
+                string emotionTag = segments[0].EmotionTag;
+                string voiceText = string.Join("", segments.ConvertAll(s => s.VoiceText).ToArray());
+                string subtitleText = string.Join("", segments.ConvertAll(s => s.SubtitleText).ToArray());
+
+                apiResult.Success = formatOk;
                 apiResult.RawResponse = fullResponse;
                 apiResult.EmotionTag = emotionTag;
                 apiResult.VoiceText = voiceText;
                 apiResult.SubtitleText = subtitleText;
                 AddToMemorySystem("User", prompt);
-                AddToMemorySystem("AI", parsedResponse.Success ? $"[{emotionTag}] {voiceText}" : $"[格式错误] {fullResponse}");
+                AddToMemorySystem("AI", formatOk ? $"[{emotionTag}] {voiceText}" : $"[格式错误] {fullResponse}");
 
-                // 【应用换行】 在将字幕文本显示到 UI 之前，强制插入换行符
-                subtitleText = ResponseParser.InsertLineBreaks(subtitleText, 25);
+                // 【逐句合成 + 逐句字幕】
+                // 两句日语检测：只要整体含假名才配音，避免中文被念成怪声
+                bool isJapanese = _japaneseCheckConfig.Value ? Regex.IsMatch(voiceText, @"[\u3040-\u309F\u30A0-\u30FF]") : true;
+                Log.Info($"isJapanese: {isJapanese} (japaneseCheck: {_japaneseCheckConfig.Value}) segments: {segments.Count}");
 
-                // 只有当 voiceText 不为空，且看起来像是日语时，才请求 TTS
-                // 简单的日语检测：看是否包含假名 (Hiragana/Katakana)
-                // 这是一个可选的保险措施
-                bool isJapanese = _japaneseCheckConfig.Value ? Regex.IsMatch(voiceText, @"[\u3040-\u309F\u30A0-\u30FF]") : true ;
-                Log.Info($"isJapanese: {isJapanese} (japaneseCheck: {_japaneseCheckConfig.Value})");
+                var segmentRuntime = new List<SegmentRuntime>();
+                foreach (var seg in segments)
+                {
+                    segmentRuntime.Add(new SegmentRuntime
+                    {
+                        Segment = seg,
+                        // 非日语 / 空文本的句子不送 TTS，只用字幕停留
+                        Failed = !isJapanese || string.IsNullOrWhiteSpace(seg.VoiceText),
+                    });
+                }
 
-                if (!string.IsNullOrEmpty(voiceText) && isJapanese)
+                bool willTts = segmentRuntime.Exists(r => !r.Failed);
+                apiResult.TtsAttempted = willTts;
+
+                int token = BeginSegmentSession();
+                if (willTts)
                 {
                     myText.text = "message is sending through cyber space";
-                    AudioClip downloadedClip = null;
-                    apiResult.TtsAttempted = true;
-                    // 【修改点 1: 移除 apiKey 参数，因为 TTS 是本地部署】
-                    yield return StartCoroutine(TTSClient.DownloadVoiceWithRetry(
-                        _sovitsUrlConfig.Value + "/tts",
-                        voiceText,
-                        _targetLangConfig.Value,
-                        _refAudioPathConfig.Value,
-                        _promptTextConfig.Value,
-                        _promptLangConfig.Value,
-                        Logger,
-                        (clip) => downloadedClip = clip,
-                        3,
-                        30f,
-                        _audioPathCheckConfig.Value));
-
-                    if (downloadedClip != null)
-                    {
-                        apiResult.TtsSucceeded = true;
-                        if (!downloadedClip.LoadAudioData()) yield return null;
-                        yield return null;
-
-                        if (_abortCurrentConversation)
-                        {
-                            Log.Info("[VoiceCall] TTS 下载完成后检测到打断，跳过播放");
-                            CleanupConversationUI();
-                            _isProcessing = false;
-                            yield break;
-                        }
-
-                        myText.text = subtitleText;
-                        myText.color = Color.white;
-
-                        // 正常播放
-                        yield return StartCoroutine(PlayNativeAnimation(emotionTag, downloadedClip));
-                    }
-                    else
-                    {
-                        myText.text = "Voice Failed (TTS Error)";
-                        // 语音失败时，至少做个动作显示字幕
-                        myText.text = subtitleText;
-                        yield return StartCoroutine(PlayNativeAnimation(emotionTag, null)); // 传 null 进去
-                    }
+                    StartCoroutine(SynthesizeSegments(segmentRuntime, token));
                 }
                 else
                 {
-                    // 【静音模式】
-                    // 如果格式错了，或者不是日语，我们就只显示字幕、做动作，不发声音
-                    // 这样比听到 AI 用奇怪的调子读中文要好得多
-                    Log.Warning("跳过 TTS：文本为空或非日语");
-
-                    myText.text = subtitleText;
-                    myText.color = Color.white;
-
-                    // 修改 PlayNativeAnimation 支持无音频模式 (见下方)
-                    yield return StartCoroutine(PlayNativeAnimation(emotionTag, null));
+                    // 没有可配音的句子：直接标记就绪，走纯字幕停留，避免在这里等一个不会来的 Done
+                    foreach (var r in segmentRuntime) r.Done = true;
                 }
+
+                yield return StartCoroutine(PlaySegments(segmentRuntime, emotionTag, myText, token));
+
+                apiResult.TtsSucceeded = segmentRuntime.Exists(r => r.Clip != null);
             }
 
             // 5. 清理
@@ -1430,6 +1472,212 @@ Response format MUST be:
             }
             GameBridge.RestoreLookAt();
             _isAISpeaking = false;
+        }
+
+        // ================= 【逐句合成 / 播放】 =================
+        int BeginSegmentSession()
+        {
+            _segmentSessionToken++;
+            return _segmentSessionToken;
+        }
+
+        bool SegmentSessionAlive(int token)
+        {
+            return token == _segmentSessionToken && !_abortCurrentConversation;
+        }
+
+        /// <summary>
+        /// 后台顺序合成：一句一个请求。播放协程与它并行，靠 Done 标志推进。
+        /// 单句短、请求小，因此比整段更不容易触发 30 秒超时。
+        /// </summary>
+        IEnumerator SynthesizeSegments(List<SegmentRuntime> runtime, int token)
+        {
+            // 服务端是单卡推理，但一次请求里含 CPU 段（文本前端 / BERT），
+            // 所以同时丢 2 个请求能拿到 15%~30% 的吞吐提升；再多收益递减。
+            int workers = Mathf.Clamp(_segmentParallelConfig.Value, 1, 3);
+            Log.Info($"[分段] 合成并发数 {workers}");
+
+            int next = 0;
+            int running = 0;
+
+            while (SegmentSessionAlive(token))
+            {
+                while (running < workers && next < runtime.Count)
+                {
+                    int index = next++;
+                    var pending = runtime[index];
+
+                    if (pending.Failed)
+                    {
+                        pending.Done = true;
+                        continue;
+                    }
+
+                    running++;
+                    StartCoroutine(SynthesizeOne(pending, index, runtime.Count, token, () => running--));
+                }
+
+                if (next >= runtime.Count && running <= 0) yield break;
+                yield return null;
+            }
+        }
+
+        /// <summary>
+        /// 单句合成。并发时由多个实例同时跑，靠计数器判断整体是否结束。
+        /// </summary>
+        IEnumerator SynthesizeOne(SegmentRuntime item, int index, int total, int token, Action onFinished)
+        {
+            int timeout = Mathf.Max(10, Mathf.RoundToInt(_segmentTimeoutConfig.Value));
+            int retries = Mathf.Clamp(_segmentRetriesConfig.Value, 1, 4);
+
+            AudioClip clip = null;
+            try
+            {
+                Log.Info($"[分段] 合成第 {index + 1}/{total} 句（{item.Segment.VoiceText.Length} 字）");
+                yield return StartCoroutine(TTSClient.DownloadVoiceWithRetry(
+                    _sovitsUrlConfig.Value + "/tts",
+                    item.Segment.VoiceText,
+                    _targetLangConfig.Value,
+                    _refAudioPathConfig.Value,
+                    _promptTextConfig.Value,
+                    _promptLangConfig.Value,
+                    Logger,
+                    c => clip = c,
+                    retries,
+                    timeout,
+                    _audioPathCheckConfig.Value));
+            }
+            finally
+            {
+                if (onFinished != null) onFinished();
+            }
+
+            if (!SegmentSessionAlive(token)) yield break;
+
+            item.Clip = clip;
+            item.Failed = clip == null;
+            item.Done = true;
+            Log.Info($"[分段] 第 {index + 1} 句 {(clip != null ? "合成完成 " + clip.length.ToString("F2") + "s" : "合成失败，改为字幕停留")}");
+        }
+
+        /// <summary>
+        /// 逐句播放：先等前 N 句合成完（预缓冲），之后边播边等后面的句子。
+        /// 字幕只在对应句子开始播放时替换。
+        /// </summary>
+        IEnumerator PlaySegments(List<SegmentRuntime> runtime, string emotion, Text myText, int token)
+        {
+            if (runtime == null || runtime.Count == 0) yield break;
+
+            int buffer = Mathf.Clamp(_segmentBufferConfig.Value, 1, 5);
+            int needReady = Mathf.Min(buffer, runtime.Count);
+            float maxWait = Mathf.Clamp(_segmentPrebufferMaxWaitConfig.Value, 0f, 60f);
+            Log.Info($"[分段] 共 {runtime.Count} 句，预缓冲 {needReady} 句，最长等待 {maxWait:F0}s");
+
+            // 1. 预缓冲：攒够 needReady 句就开播；若中途某句在重试，最多等 maxWait 秒就先开口
+            float waited = 0f;
+            while (SegmentSessionAlive(token))
+            {
+                int doneCount = 0;
+                for (int i = 0; i < runtime.Count; i++) if (runtime[i].Done) doneCount++;
+
+                if (runtime[0].Done && (doneCount >= needReady || waited >= maxWait))
+                {
+                    if (doneCount < needReady)
+                        Log.Info($"[分段] 预缓冲超时（只就绪 {doneCount} 句），先开始播放");
+                    break;
+                }
+
+                waited += Time.unscaledDeltaTime;
+                yield return null;
+            }
+            if (!SegmentSessionAlive(token)) yield break;
+
+            // 2. 归位 + 挑一个动作（整条回复只演一次，避免每句都抽搐）
+            if (GameBridge._heroineService != null && GameBridge._changeAnimSmoothMethod != null)
+            {
+                if (emotion != "Drink" && emotion != "Relaxed")
+                {
+                    GameBridge.CallNativeChangeAnim(250);
+                    float warm = 0f;
+                    while (warm < 0.2f && SegmentSessionAlive(token))
+                    {
+                        yield return null;
+                        warm += Time.unscaledDeltaTime;
+                    }
+                }
+
+                if (SegmentSessionAlive(token))
+                {
+                    string pickedAnim = GameBridge.PickRandomAnimation(emotion);
+                    Log.Info($"[动画] {emotion} -> {pickedAnim}");
+                    GameBridge.PlayAnimation(pickedAnim);
+                    if (emotion == "Greeting" || emotion == "Wave") GameBridge.ControlLookAt(1.0f, 0.5f);
+                }
+            }
+
+            // 3. 一句一句播
+            for (int i = 0; i < runtime.Count; i++)
+            {
+                if (!SegmentSessionAlive(token))
+                {
+                    if (_audioSource != null && _audioSource.isPlaying) _audioSource.Stop();
+                    _isAISpeaking = false;
+                    yield break;
+                }
+
+                var item = runtime[i];
+
+                // 下一句还没合成好就等它（不提前显示下一句字幕）
+                if (!item.Done)
+                {
+                    Log.Info($"[分段] 等待第 {i + 1} 句合成完成");
+                    while (!item.Done && SegmentSessionAlive(token)) yield return null;
+                    if (!SegmentSessionAlive(token)) yield break;
+                }
+
+                string subtitle = ResponseParser.InsertLineBreaks(item.Segment.SubtitleText, 25);
+                myText.text = subtitle;
+                myText.color = Color.white;
+
+                if (item.Clip != null)
+                {
+                    if (!item.Clip.LoadAudioData()) yield return null;
+
+                    _isAISpeaking = true;
+                    _audioSource.clip = item.Clip;
+                    _audioSource.Play();
+                    Log.Info($"[分段] 播放第 {i + 1}/{runtime.Count} 句（{item.Clip.length:F2}s）：{subtitle}");
+
+                    float elapsed = 0f;
+                    float limit = item.Clip.length + 3f;
+                    yield return null;
+                    while (_audioSource.isPlaying && elapsed < limit && SegmentSessionAlive(token))
+                    {
+                        elapsed += Time.unscaledDeltaTime;
+                        yield return null;
+                    }
+                    if (_audioSource.isPlaying) _audioSource.Stop();
+                    _isAISpeaking = false;
+
+                    yield return new WaitForSecondsRealtime(0.15f);
+                }
+                else
+                {
+                    // 这句没合成出来：用可读的停留时间展示字幕，再继续下一句
+                    float readTime = Mathf.Clamp(item.Segment.SubtitleText.Length * 0.12f, 1.5f, 8f);
+                    Log.Warning($"[分段] 第 {i + 1} 句无语音，字幕停留 {readTime:F1}s：{subtitle}");
+
+                    float elapsed = 0f;
+                    while (elapsed < readTime && SegmentSessionAlive(token))
+                    {
+                        elapsed += Time.unscaledDeltaTime;
+                        yield return null;
+                    }
+                }
+            }
+
+            _isAISpeaking = false;
+            if (GameBridge._heroineService != null) GameBridge.RestoreLookAt();
         }
 
         // ================= 【新增录音控制】 =================
@@ -1660,6 +1908,8 @@ Response format MUST be:
         {
             Log.Info("[VoiceCall] 打断当前 AI 回复");
             _abortCurrentConversation = true;
+            // 让逐句合成的后台协程立刻失效，不再占用 TTS 服务
+            _segmentSessionToken++;
 
             if (_audioSource != null && _audioSource.isPlaying)
             {
@@ -2091,6 +2341,12 @@ Response format MUST be:
                 ["AudioPathCheck"] = _audioPathCheckConfig,
                 ["JapaneseCheck"] = _japaneseCheckConfig,
                 ["VoiceVolume"] = _voiceVolumeConfig,
+                ["SegmentMode"] = _segmentModeConfig,
+                ["SegmentBufferCount"] = _segmentBufferConfig,
+                ["SegmentPrebufferMaxSeconds"] = _segmentPrebufferMaxWaitConfig,
+                ["SegmentTimeoutSeconds"] = _segmentTimeoutConfig,
+                ["SegmentRetries"] = _segmentRetriesConfig,
+                ["SegmentParallelRequests"] = _segmentParallelConfig,
                 ["SystemPrompt"] = _personaConfig,
                 ["ExperimentalMemory"] = _experimentalMemoryConfig,
                 ["ReverseEnterBehavior"] = _reverseEnterBehaviorConfig,
@@ -2166,6 +2422,12 @@ Response format MUST be:
                     case "AudioPathCheck": _audioPathCheckConfig.Value = bool.Parse(value); break;
                     case "JapaneseCheck": _japaneseCheckConfig.Value = bool.Parse(value); break;
                     case "VoiceVolume": _voiceVolumeConfig.Value = Mathf.Clamp(float.Parse(value), 0f, 1f); _audioSource.volume = _voiceVolumeConfig.Value; break;
+                    case "SegmentMode": _segmentModeConfig.Value = bool.Parse(value); break;
+                    case "SegmentBufferCount": _segmentBufferConfig.Value = Mathf.Clamp(int.Parse(value), 1, 5); break;
+                    case "SegmentPrebufferMaxSeconds": _segmentPrebufferMaxWaitConfig.Value = Mathf.Clamp(float.Parse(value), 0f, 60f); break;
+                    case "SegmentTimeoutSeconds": _segmentTimeoutConfig.Value = Mathf.Max(10f, float.Parse(value)); break;
+                    case "SegmentRetries": _segmentRetriesConfig.Value = Mathf.Clamp(int.Parse(value), 1, 4); break;
+                    case "SegmentParallelRequests": _segmentParallelConfig.Value = Mathf.Clamp(int.Parse(value), 1, 3); break;
                     case "SystemPrompt": _personaConfig.Value = value ?? string.Empty; break;
                     case "ExperimentalMemory": _experimentalMemoryConfig.Value = bool.Parse(value); break;
                     case "ReverseEnterBehavior": _reverseEnterBehaviorConfig.Value = bool.Parse(value); break;
