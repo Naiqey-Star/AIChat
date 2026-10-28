@@ -139,6 +139,12 @@ namespace ChillAIMod
         private int _lastMicrophonePosition = 0;
         private Coroutine _currentConversationCoroutine;
         private bool _abortCurrentConversation = false;
+
+        // 被打断时的现场，用来在下一轮告诉模型玩家听到哪儿
+        private string _pendingInterruptNote = null;
+        private int _spokenSegmentIndex = 0;
+        private int _spokenSegmentTotal = 0;
+        private string _spokenSegmentText = string.Empty;
         private Coroutine _resumeListeningCoroutine;
 
         // 当前对话的 UI 句柄，用于打断时清理
@@ -1181,6 +1187,9 @@ Write every reply as a sequence of SHORT lines. Each line is exactly:
             };
 
             _abortCurrentConversation = false;
+            _spokenSegmentIndex = 0;
+            _spokenSegmentTotal = 0;
+            _spokenSegmentText = string.Empty;
 
             AppendChat(true, prompt);
 
@@ -1241,7 +1250,7 @@ Write every reply as a sequence of SHORT lines. Each line is exactly:
                 ApiKey = _apiKeyConfig.Value,
                 ModelName = _modelConfig.Value,
                 SystemPrompt = _personaConfig.Value,
-                UserPrompt = prompt,
+                UserPrompt = BuildPromptWithInterruptContext(prompt),
                 UseLocalOllama = _useOllama.Value,
                 LogApiRequestBody = _logApiRequestBodyConfig.Value,
                 ThinkMode = _thinkModeConfig.Value,
@@ -2062,6 +2071,9 @@ Write every reply as a sequence of SHORT lines. Each line is exactly:
                 myText.color = Color.white;
 
                 LastSegmentSubtitle = item.Segment.SubtitleText;
+                _spokenSegmentIndex = i + 1;
+                _spokenSegmentTotal = runtime.Count;
+                _spokenSegmentText = item.Segment.SubtitleText;
                 try { SegmentShown?.Invoke(item.Segment.SubtitleText); }
                 catch (Exception ex) { Log.Warning($"[PublicApi] SegmentShown 回调异常: {ex.Message}"); }
 
@@ -2330,6 +2342,40 @@ Write every reply as a sequence of SHORT lines. Each line is exactly:
             StartCoroutine(ASRWorkflow(wavData, "voicecall"));
         }
 
+        /// <summary>
+        /// 外部（面板 / 脚本）主动打断当前回复。返回是否真的打断了什么。
+        /// 会把「玩家听到第几句」记下来，下一轮请求时作为上下文交给模型。
+        /// </summary>
+        public bool InterruptConversation()
+        {
+            bool active = _isProcessing || _isAISpeaking || (_audioSource != null && _audioSource.isPlaying);
+            if (!active) return false;
+
+            if (_spokenSegmentIndex > 0 && _spokenSegmentTotal > 0)
+            {
+                string heard = string.IsNullOrEmpty(_spokenSegmentText) ? "" : $"「{_spokenSegmentText}」";
+                _pendingInterruptNote =
+                    $"[被打断] 你上一条回复一共 {_spokenSegmentTotal} 句，玩家在你念到第 {_spokenSegmentIndex} 句{heard}时打断了你，" +
+                    "第 " + (_spokenSegmentIndex + 1) + " 句之后的内容玩家没有听到。" +
+                    "这是聊天里很正常的插话：不要重复已经说过的内容，不要假装玩家听完了，也不要责怪玩家打断。" +
+                    "先用一句话回应玩家刚说的话，需要的话再补上被打断处之后最关键的一点，然后把话头交回去。";
+            }
+
+            InterruptCurrentConversation();
+            _spokenSegmentIndex = 0;
+            _spokenSegmentTotal = 0;
+            _spokenSegmentText = string.Empty;
+            return true;
+        }
+
+        string BuildPromptWithInterruptContext(string prompt)
+        {
+            if (string.IsNullOrEmpty(_pendingInterruptNote)) return prompt;
+
+            string note = _pendingInterruptNote;
+            _pendingInterruptNote = null;
+            return note + "\n玩家接下来说：" + prompt;
+        }
         void InterruptCurrentConversation()
         {
             Log.Info("[VoiceCall] 打断当前 AI 回复");
@@ -2468,7 +2514,7 @@ Write every reply as a sequence of SHORT lines. Each line is exactly:
                 ApiKey = _apiKeyConfig.Value,
                 ModelName = _modelConfig.Value,
                 SystemPrompt = "你是一个专业的文本总结助手。",
-                UserPrompt = prompt,
+                UserPrompt = BuildPromptWithInterruptContext(prompt),
                 UseLocalOllama = _useOllama.Value,
                 LogApiRequestBody = _logApiRequestBodyConfig.Value,
                 ThinkMode = _thinkModeConfig.Value,
