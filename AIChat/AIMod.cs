@@ -87,6 +87,8 @@ namespace ChillAIMod
         
         // --- 新增：窗口标题显示配置 ---
         private ConfigEntry<bool> _showWindowTitle;
+        private ConfigEntry<string> _aiAvatarPathConfig;
+        private ConfigEntry<string> _playerAvatarPathConfig;
 
         // --- 新增：微调模式配置 ---
         private ConfigEntry<bool> _useFinetunedModel;
@@ -163,6 +165,11 @@ namespace ChillAIMod
         private Texture2D _bubbleAiTex;
         private int _bubbleStyleFontSize = -1;
         private const int ChatLogMaxEntries = 400;
+
+        private Vector2 _settingsScroll = Vector2.zero;
+        private Texture2D _aiAvatarTex;
+        private Texture2D _playerAvatarTex;
+        private bool _avatarLoadAttempted;
         private bool _isProcessing = false;
         private bool _isResizing = false; // 新增：拖拽调整大小状态
 
@@ -323,6 +330,11 @@ Write every reply as a sequence of SHORT lines. Each line is exactly:
             
             // 窗口标题显示配置
             _showWindowTitle = Config.Bind("3. UI", "ShowWindowTitle", true, "显示窗口标题");
+            // --- 头像（聊天记录气泡用）---
+            _aiAvatarPathConfig = Config.Bind("3. UI", "AI_Avatar_Image", "",
+                "AI 头像图片路径；留空则自动在游戏资源里找企鹅头像");
+            _playerAvatarPathConfig = Config.Bind("3. UI", "Player_Avatar_Image", "",
+                "玩家头像图片路径；留空则使用 Steam 头像");
 
             // 静音游戏原生音频
             _muteGameNativeAudio = Config.Bind("3. UI", "MuteGameNativeAudio", false,
@@ -591,10 +603,7 @@ Write every reply as a sequence of SHORT lines. Each line is exactly:
             float btnWidth   = elementHeight * 2f; 
             // =======================================================
 
-            // 开始滚动视图
-            _scrollPosition = GUILayout.BeginScrollView(_scrollPosition);
-            
-            // 开始整体垂直布局
+            // 整体垂直布局（窗口本身透明，不加任何背景板）
             GUILayout.BeginVertical();
 
             // 版本信息显示
@@ -617,6 +626,10 @@ Write every reply as a sequence of SHORT lines. Each line is exactly:
             // ================= 【设置面板区域】 =================
             if (_showSettings)
             {
+                // 设置面板放在有界滚动区里，避免把聊天区挤没
+                _settingsScroll = GUILayout.BeginScrollView(_settingsScroll, false, true,
+                    GUILayout.Height(Mathf.Clamp(_windowRect.height * 0.5f, 150f, Screen.height * 0.6f)));
+
                 GUILayout.Space(10);
 
                 // 【关键修复】统一计算内部 Box 宽度
@@ -978,73 +991,67 @@ Write every reply as a sequence of SHORT lines. Each line is exactly:
                     Log.Info("配置已保存！");
                 }
                 GUILayout.Space(10);
+
+                GUILayout.EndScrollView();
             }
             // ================= 设置面板结束 =================
 
-            // === 聊天记录区域 ===
-            GUILayout.Space(8);
-            GUILayout.Label("<b>聊天记录：</b>");
+            // === 聊天记录区域（透明底，只有气泡） ===
+            GUILayout.Space(6);
             DrawChatHistory(dynamicFontSize, elementHeight);
 
-            // === 对话区域 ===
-            GUILayout.Space(10);
-            GUILayout.Label("<b>与聪音对话：</b>");
-
+            // === 输入栏 ===
+            GUILayout.Space(4);
             GUI.backgroundColor = Color.white;
 
-            // 动态计算输入框高度
-            float dynamicInputHeight = _windowRect.height * 0.22f;
-            dynamicInputHeight = Mathf.Clamp(dynamicInputHeight, 60f, 160f);
-
-            GUIStyle largeInputStyle = new GUIStyle(GUI.skin.textArea);
-            largeInputStyle.fontSize = (int)(dynamicFontSize * 1.4f);
-            largeInputStyle.wordWrap = true;
-            largeInputStyle.alignment = TextAnchor.UpperLeft;
-
+            GUIStyle composerStyle = new GUIStyle(GUI.skin.textArea)
+            {
+                fontSize = Mathf.Max(12, (int)(dynamicFontSize * 1.05f)),
+                wordWrap = true,
+                alignment = TextAnchor.UpperLeft,
+                padding = new RectOffset(8, 8, 6, 6),
+                richText = false,
+            };
             GUI.skin.textArea.wordWrap = true;
-            
-            // 处理快捷键（回车和 Shift+回车）- 必须在 TextArea 之前处理
+
+            float composerMaxHeight = Mathf.Clamp(_windowRect.height * 0.5f, 80f, Screen.height * 0.5f);
+            float layoutWidth = Mathf.Max(160f, _windowRect.width - 44f);
+            float sendBtnWidth = Mathf.Clamp(layoutWidth * 0.16f, 52f, 96f);
+            float textAreaWidth = Mathf.Max(80f, layoutWidth - sendBtnWidth - 8f);
+            float lineHeight = composerStyle.fontSize + 8f;
+
+            // 输入框高度跟着行数增长：多行长文本也始终能看到正在输入的最后一行
+            string measureText = string.IsNullOrEmpty(_playerInput) ? " " : _playerInput;
+            float measuredHeight = composerStyle.CalcHeight(new GUIContent(measureText), Mathf.Max(40f, textAreaWidth - 22f));
+            float inputHeight = Mathf.Clamp(measuredHeight + 12f, lineHeight + 10f, composerMaxHeight);
+
             Event keyEvent = Event.current;
             bool shouldSendMessage = false;
-            
-            if (keyEvent.type == EventType.KeyDown && 
-                keyEvent.keyCode == KeyCode.Return && 
+
+            if (keyEvent.type == EventType.KeyDown &&
+                keyEvent.keyCode == KeyCode.Return &&
                 !_isProcessing &&
                 !string.IsNullOrEmpty(_playerInput))
             {
-                // 检测是否按下 Shift 键
                 bool shiftPressed = keyEvent.shift;
-                
-                // 根据配置决定是否应该发送
-                // 默认模式（_reverseEnterBehaviorConfig = false）：Enter 发送，Shift+Enter 换行
-                // 反转模式（_reverseEnterBehaviorConfig = true）：Enter 换行，Shift+Enter 发送
                 shouldSendMessage = _reverseEnterBehaviorConfig.Value ? shiftPressed : !shiftPressed;
             }
-            
-            // 如果需要发送消息，在渲染 TextArea 之前拦截事件
+
             if (shouldSendMessage)
             {
                 _currentConversationCoroutine = StartCoroutine(AIProcessRoutine(_playerInput));
                 _playerInput = "";
-                keyEvent.Use(); // 消费事件，防止 TextArea 处理
+                keyEvent.Use();
             }
-            
-            _playerInput = GUILayout.TextArea(_playerInput, largeInputStyle, GUILayout.Height(dynamicInputHeight));
-
-            GUILayout.Space(5);
-            GUI.backgroundColor = _isProcessing ? Color.gray : new Color(0.1725f, 0.1608f, 0.2784f);
 
             GUILayout.BeginHorizontal();
 
-            // 1. 计算精确宽度
-            // _windowRect.width - 50f 是我们之前定义的 innerBoxWidth (与设置框对齐)
-            // 再减去 4f 是为了留出两个按钮中间的缝隙
-            float totalWidth = _windowRect.width - 50f;
-            float singleBtnWidth = (totalWidth - 4f) / 2f;
+            _playerInput = GUILayout.TextArea(_playerInput, composerStyle,
+                GUILayout.Height(inputHeight), GUILayout.Width(textAreaWidth));
 
-            // ================== 发送按钮 ==================
-            // 使用 GUILayout.Width(singleBtnWidth) 强制固定宽度
-            if (GUILayout.Button(_isProcessing ? "思考中..." : "发送", GUILayout.Height(elementHeight * 1.5f), GUILayout.Width(singleBtnWidth)))
+            GUI.backgroundColor = _isProcessing ? Color.gray : new Color(0.36f, 0.42f, 0.95f, 1f);
+            if (GUILayout.Button(_isProcessing ? "…" : "发送",
+                GUILayout.Width(sendBtnWidth), GUILayout.Height(inputHeight)))
             {
                 if (!string.IsNullOrEmpty(_playerInput) && !_isProcessing)
                 {
@@ -1053,15 +1060,12 @@ Write every reply as a sequence of SHORT lines. Each line is exactly:
                 }
             }
 
-            // ================== 录音按钮 ==================
-            if (_isProcessing)
-            {
-                GUI.backgroundColor = Color.gray; 
-            }
-            else
-            {
-                GUI.backgroundColor = _isRecording ? Color.red : new Color(0.1725f, 0.1608f, 0.2784f);
-            }
+            GUILayout.EndHorizontal();
+
+            // === 次要按钮：语音 / 持续通话 ===
+            GUILayout.Space(4);
+            float halfWidth = (layoutWidth - 6f) * 0.5f;
+
             string micBtnText;
             if (_isProcessing)
             {
@@ -1079,25 +1083,28 @@ Write every reply as a sequence of SHORT lines. Each line is exactly:
                 micBtnText = _isRecording ? "🔴 松开结束" : "🎤 按住说话";
             }
 
-            // 使用 GUILayout.Width(singleBtnWidth) 强制固定宽度
-            Rect btnRect = GUILayoutUtility.GetRect(
-                new GUIContent(micBtnText), 
-                GUI.skin.button, 
-                GUILayout.Height(elementHeight * 1.5f), 
-                GUILayout.Width(singleBtnWidth) // <--- 强制宽度，不再依赖自动扩展
-            );
+            GUILayout.BeginHorizontal();
 
-            Event e = Event.current;
+            if (_isProcessing) GUI.backgroundColor = Color.gray;
+            else GUI.backgroundColor = _isRecording ? Color.red : new Color(0.1725f, 0.1608f, 0.2784f);
+
+            Rect btnRect = GUILayoutUtility.GetRect(
+                new GUIContent(micBtnText),
+                GUI.skin.button,
+                GUILayout.Height(elementHeight * 1.3f),
+                GUILayout.Width(halfWidth));
+
+            Event micEvent = Event.current;
             int controlID = GUIUtility.GetControlID(FocusType.Passive);
 
-            switch (e.type)
+            switch (micEvent.type)
             {
                 case EventType.MouseDown:
-                    if (btnRect.Contains(e.mousePosition) && !_isProcessing && !_continuousCallActive)
+                    if (btnRect.Contains(micEvent.mousePosition) && !_isProcessing && !_continuousCallActive)
                     {
-                        GUIUtility.hotControl = controlID; 
+                        GUIUtility.hotControl = controlID;
                         StartRecording();
-                        e.Use();
+                        micEvent.Use();
                     }
                     break;
 
@@ -1106,29 +1113,25 @@ Write every reply as a sequence of SHORT lines. Each line is exactly:
                     {
                         GUIUtility.hotControl = 0;
                         StopRecordingAndRecognize();
-                        e.Use();
+                        micEvent.Use();
                     }
                     break;
             }
 
             GUI.Box(btnRect, micBtnText, GUI.skin.button);
 
-            GUILayout.EndHorizontal();
-
-            // 持续通话模式开关
-            GUILayout.Space(5);
             GUI.backgroundColor = _continuousCallActive ? new Color(0.2f, 0.8f, 0.2f) : new Color(0.1725f, 0.1608f, 0.2784f);
-            string callToggleText = _continuousCallActive ? "☎️ 结束持续通话" : "☎️ 开始持续通话";
-            if (GUILayout.Button(callToggleText, GUILayout.Height(elementHeight * 1.2f)))
+            string callToggleText = _continuousCallActive ? "☎️ 结束通话" : "☎️ 持续通话";
+            if (GUILayout.Button(callToggleText, GUILayout.Height(elementHeight * 1.3f), GUILayout.Width(halfWidth)))
             {
                 if (_continuousCallActive) StopContinuousCall();
                 else StartContinuousCall();
             }
             GUI.backgroundColor = Color.white;
 
-            // 结束整体布局
+            GUILayout.EndHorizontal();
+
             GUILayout.EndVertical();
-            GUILayout.EndScrollView();
 
             // --- 拖拽手柄 ---
             const float handleSize = 25f;
@@ -1676,9 +1679,14 @@ Write every reply as a sequence of SHORT lines. Each line is exactly:
         void DrawChatHistory(int fontSize, float elementHeight)
         {
             EnsureBubbleStyles(fontSize);
+            EnsureAvatars();
 
-            float logHeight = Mathf.Clamp(_windowRect.height * 0.42f, 120f, Screen.height * 0.55f);
-            _chatScroll = GUILayout.BeginScrollView(_chatScroll, false, true, GUILayout.Height(logHeight));
+            int avatarSize = Mathf.Max(24, Mathf.RoundToInt(fontSize * 2.1f));
+            float maxBubbleWidth = Mathf.Max(110f, (_windowRect.width - 44f) * 0.78f - avatarSize * 1.4f);
+
+            // 聊天区自己吃掉剩下的高度，背景保持透明，只有气泡浮在上面
+            _chatScroll = GUILayout.BeginScrollView(_chatScroll, false, true,
+                GUILayout.ExpandHeight(true), GUILayout.MinHeight(fontSize * 4f));
 
             if (_chatLog.Count == 0)
             {
@@ -1686,15 +1694,30 @@ Write every reply as a sequence of SHORT lines. Each line is exactly:
             }
             else
             {
-                float maxBubbleWidth = Mathf.Max(120f, _windowRect.width * 0.72f);
                 foreach (var bubble in _chatLog)
                 {
                     GUILayout.BeginHorizontal();
                     if (bubble.IsUser) GUILayout.FlexibleSpace();
+
+                    if (!bubble.IsUser)
+                    {
+                        if (_aiAvatarTex != null)
+                            GUILayout.Label(new GUIContent(_aiAvatarTex), GUILayout.Width(avatarSize), GUILayout.Height(avatarSize));
+                        GUILayout.Space(fontSize * 0.4f);
+                    }
+
                     GUILayout.Label(bubble.Text, bubble.IsUser ? _bubbleUserStyle : _bubbleAiStyle, GUILayout.MaxWidth(maxBubbleWidth));
-                    if (!bubble.IsUser) GUILayout.FlexibleSpace();
+
+                    if (bubble.IsUser)
+                    {
+                        GUILayout.Space(fontSize * 0.4f);
+                        if (_playerAvatarTex != null)
+                            GUILayout.Label(new GUIContent(_playerAvatarTex), GUILayout.Width(avatarSize), GUILayout.Height(avatarSize));
+                    }
+
+                    if (bubble.IsUser) GUILayout.FlexibleSpace();
                     GUILayout.EndHorizontal();
-                    GUILayout.Space(fontSize * 0.3f);
+                    GUILayout.Space(fontSize * 0.35f);
                 }
             }
 
@@ -1704,6 +1727,170 @@ Write every reply as a sequence of SHORT lines. Each line is exactly:
             {
                 _chatScroll.y = 1000000f;
                 _chatScrollToBottom = false;
+            }
+        }
+
+        // ── 头像 ────────────────────────────────────────────────
+        void EnsureAvatars()
+        {
+            if (_avatarLoadAttempted) return;
+            _avatarLoadAttempted = true;
+
+            const int size = 96;
+            try
+            {
+                _aiAvatarTex = LoadAvatarFromFile(_aiAvatarPathConfig.Value, size)
+                               ?? TryFindSpriteAvatar(size, "penguin", "企鹅", "qie")
+                               ?? MakeSolidCircle(size, new Color(0.16f, 0.55f, 0.78f, 1f));
+
+                _playerAvatarTex = LoadAvatarFromFile(_playerAvatarPathConfig.Value, size)
+                                   ?? TryGetSteamAvatar(size)
+                                   ?? MakeSolidCircle(size, new Color(0.55f, 0.38f, 0.78f, 1f));
+            }
+            catch (Exception ex)
+            {
+                Log.Warning($"[头像] 载入失败: {ex.Message}");
+            }
+
+            if (_aiAvatarTex == null) _aiAvatarTex = MakeSolidCircle(size, new Color(0.16f, 0.55f, 0.78f, 1f));
+            if (_playerAvatarTex == null) _playerAvatarTex = MakeSolidCircle(size, new Color(0.55f, 0.38f, 0.78f, 1f));
+        }
+
+        static Texture2D LoadAvatarFromFile(string path, int size)
+        {
+            if (string.IsNullOrWhiteSpace(path)) return null;
+            try
+            {
+                path = path.Trim().Trim('"');
+                if (!File.Exists(path)) return null;
+                var src = new Texture2D(2, 2, TextureFormat.RGBA32, false);
+                if (!src.LoadImage(File.ReadAllBytes(path))) return null;
+                return MakeCircleFromTexture(src, new Rect(0, 0, src.width, src.height), size);
+            }
+            catch { return null; }
+        }
+
+        static Texture2D TryFindSpriteAvatar(int size, params string[] keywords)
+        {
+            try
+            {
+                foreach (var sp in Resources.FindObjectsOfTypeAll<Sprite>())
+                {
+                    if (sp == null || sp.texture == null) continue;
+                    string n = sp.name.ToLowerInvariant();
+                    foreach (var k in keywords)
+                    {
+                        if (n.Contains(k.ToLowerInvariant()))
+                            return MakeCircleFromTexture(sp.texture, sp.textureRect, size);
+                    }
+                }
+            }
+            catch { }
+            return null;
+        }
+
+        static Texture2D TryGetSteamAvatar(int size)
+        {
+            try
+            {
+                var steamFriends = Type.GetType("Steamworks.SteamFriends, com.rlabrecque.steamworks.net");
+                var steamUtils = Type.GetType("Steamworks.SteamUtils, com.rlabrecque.steamworks.net");
+                var steamUser = Type.GetType("Steamworks.SteamUser, com.rlabrecque.steamworks.net");
+                if (steamFriends == null || steamUtils == null || steamUser == null) return null;
+
+                object steamId = steamUser.GetMethod("GetSteamID")?.Invoke(null, null);
+                if (steamId == null) return null;
+
+                var getAvatar = steamFriends.GetMethod("GetMediumFriendAvatar", new[] { steamId.GetType() });
+                if (getAvatar == null) return null;
+                int handle = Convert.ToInt32(getAvatar.Invoke(null, new[] { steamId }));
+                if (handle <= 0) return null;
+
+                object[] sizeArgs = { handle, 0u, 0u };
+                var getSize = steamUtils.GetMethod("GetImageSize");
+                if (getSize == null || !(bool)getSize.Invoke(null, sizeArgs)) return null;
+                int w = (int)(uint)sizeArgs[1];
+                int h = (int)(uint)sizeArgs[2];
+                if (w <= 0 || h <= 0) return null;
+
+                var buffer = new byte[w * h * 4];
+                var getRgba = steamUtils.GetMethod("GetImageRGBA");
+                if (getRgba == null || !(bool)getRgba.Invoke(null, new object[] { handle, buffer, buffer.Length })) return null;
+
+                var tex = new Texture2D(w, h, TextureFormat.RGBA32, false);
+                var colors = new Color32[w * h];
+                for (int y = 0; y < h; y++)
+                {
+                    int srcRow = (h - 1 - y) * w * 4;   // Steam 头像自下而上
+                    for (int x = 0; x < w; x++)
+                    {
+                        int si = srcRow + x * 4;
+                        colors[y * w + x] = new Color32(buffer[si], buffer[si + 1], buffer[si + 2], buffer[si + 3]);
+                    }
+                }
+                tex.SetPixels32(colors);
+                tex.Apply();
+                return MakeCircleFromTexture(tex, new Rect(0, 0, w, h), size);
+            }
+            catch { return null; }
+        }
+
+        static Texture2D MakeSolidCircle(int size, Color fill)
+        {
+            var tex = new Texture2D(size, size, TextureFormat.ARGB32, false);
+            var clear = new Color(0f, 0f, 0f, 0f);
+            float r = size * 0.5f - 1f;
+            for (int y = 0; y < size; y++)
+            {
+                for (int x = 0; x < size; x++)
+                {
+                    float dx = x - (size - 1) * 0.5f, dy = y - (size - 1) * 0.5f;
+                    tex.SetPixel(x, y, dx * dx + dy * dy <= r * r ? fill : clear);
+                }
+            }
+            tex.Apply();
+            return tex;
+        }
+
+        static Texture2D MakeCircleFromTexture(Texture src, Rect uv, int size)
+        {
+            RenderTexture rt = null;
+            var prev = RenderTexture.active;
+            try
+            {
+                rt = RenderTexture.GetTemporary(size, size, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.sRGB);
+                float side = Mathf.Min(uv.width, uv.height);
+                var scale = new Vector2(side / src.width, side / src.height);
+                var offset = new Vector2(
+                    (uv.x + uv.width * 0.5f) / src.width - scale.x * 0.5f,
+                    (uv.y + uv.height * 0.5f) / src.height - scale.y * 0.5f);
+                Graphics.Blit(src, rt, scale, offset);
+
+                RenderTexture.active = rt;
+                var tex = new Texture2D(size, size, TextureFormat.ARGB32, false);
+                tex.ReadPixels(new Rect(0, 0, size, size), 0, 0);
+                tex.Apply();
+
+                float r = size * 0.5f - 0.5f;
+                var px = tex.GetPixels();
+                var clear = new Color(0f, 0f, 0f, 0f);
+                for (int y = 0; y < size; y++)
+                {
+                    for (int x = 0; x < size; x++)
+                    {
+                        float dx = x - (size - 1) * 0.5f, dy = y - (size - 1) * 0.5f;
+                        if (dx * dx + dy * dy > r * r) px[y * size + x] = clear;
+                    }
+                }
+                tex.SetPixels(px);
+                tex.Apply();
+                return tex;
+            }
+            catch { return null; }
+            finally
+            {
+                if (rt != null) RenderTexture.ReleaseTemporary(rt);
+                RenderTexture.active = prev;
             }
         }
 
