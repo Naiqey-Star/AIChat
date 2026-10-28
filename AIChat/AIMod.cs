@@ -1198,7 +1198,7 @@ Write every reply as a sequence of SHORT lines. Each line is exactly:
             _currentUiStatusMap = uiStatusMap;
 
             Text myText = myTextObj.GetComponent<Text>();
-            myText.text = "Thinking...";
+            StartStatusDots(myText, "送信中");
             myText.color = Color.yellow;
 
             // 2. 准备请求数据
@@ -1252,6 +1252,7 @@ Write every reply as a sequence of SHORT lines. Each line is exactly:
                 apiResult.ErrorCode = errCode;
                 apiResult.ErrorMessage = errMsg;
                 apiResult.RawResponse = string.Empty;
+                StopStatusDots();
                 myText.text = errMsg;
                 myText.color = Color.red;
 
@@ -1341,7 +1342,7 @@ Write every reply as a sequence of SHORT lines. Each line is exactly:
                 int token = BeginSegmentSession();
                 if (willTts)
                 {
-                    myText.text = "message is sending through cyber space";
+                    StartStatusDots(myText, "收信中");
                     StartCoroutine(SynthesizeSegments(segmentRuntime, token));
                 }
                 else
@@ -1505,6 +1506,43 @@ Write every reply as a sequence of SHORT lines. Each line is exactly:
             }
         }
 
+        // ── 状态提示（送信中 / 收信中）的点点动画 ──────────────────
+        private Coroutine _statusDotsCoroutine;
+        private string _statusBaseText = "";
+
+        /// <summary>
+        /// 显示「送信中」/「收信中」这类状态，并让末尾的点循环出现：
+        /// 0.5s 一个、1.5s 三个，2.0s 清空重来。
+        /// </summary>
+        void StartStatusDots(Text target, string baseText)
+        {
+            StopStatusDots();
+            _statusBaseText = baseText ?? "";
+            if (target == null) return;
+            target.text = _statusBaseText;
+            _statusDotsCoroutine = StartCoroutine(StatusDotsRoutine(target));
+        }
+
+        void StopStatusDots()
+        {
+            if (_statusDotsCoroutine != null)
+            {
+                StopCoroutine(_statusDotsCoroutine);
+                _statusDotsCoroutine = null;
+            }
+        }
+
+        IEnumerator StatusDotsRoutine(Text target)
+        {
+            int phase = 0;
+            while (true)
+            {
+                if (target != null) target.text = _statusBaseText + new string('.', phase);
+                yield return new WaitForSecondsRealtime(0.5f);
+                phase = (phase + 1) % 4;   // 0 -> 1 -> 2 -> 3 -> 回到 0（清空）
+            }
+        }
+
         /// <summary>
         /// 后台顺序合成：一句一个请求。播放协程与它并行，靠 Done 标志推进。
         /// 单句短、请求小，因此比整段更不容易触发 30 秒超时。
@@ -1654,6 +1692,14 @@ Write every reply as a sequence of SHORT lines. Each line is exactly:
                     if (!SegmentSessionAlive(token)) yield break;
                 }
 
+                // 游戏自己的 UI 逻辑可能在长时间播放后把消息窗口收起来（或把 CanvasGroup 渐隐），
+                // 这里每句都强制恢复一次可见性，否则长时间播放到后半段会只剩声音没有字幕。
+                bool subtitleWasHidden = !myText.gameObject.activeInHierarchy;
+                UIHelper.ForceShowWindow(myText.gameObject, null);
+                if (subtitleWasHidden)
+                    Log.Info($"[分段] 字幕对象被隐藏，第 {i + 1} 句前重新显示");
+
+                StopStatusDots();
                 string subtitle = ResponseParser.InsertLineBreaks(item.Segment.SubtitleText, 25);
                 myText.text = subtitle;
                 myText.color = Color.white;
@@ -1948,6 +1994,7 @@ Write every reply as a sequence of SHORT lines. Each line is exactly:
 
         void CleanupConversationUI()
         {
+            StopStatusDots();
             try
             {
                 if (_currentUiStatusMap != null)
