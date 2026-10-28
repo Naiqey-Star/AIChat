@@ -28,6 +28,12 @@ namespace ChillAIMod
 
         public event Action<AIChatApiConversationResult> ConversationCompleted;
 
+        /// <summary>每显示一句字幕就触发一次，参数是这句的中文文本。</summary>
+        public event Action<string> SegmentShown;
+
+        /// <summary>最近一次显示的句子（供不支持事件的外部轮询）。</summary>
+        public string LastSegmentSubtitle { get; private set; } = string.Empty;
+
         public string ApiVersion => "1.0.0";
         public bool IsBusy => _isProcessing;
         public bool IsReady => _isTTSServiceReady;
@@ -2054,6 +2060,10 @@ Write every reply as a sequence of SHORT lines. Each line is exactly:
                 string subtitle = ResponseParser.InsertLineBreaks(item.Segment.SubtitleText, 25);
                 myText.text = subtitle;
                 myText.color = Color.white;
+
+                LastSegmentSubtitle = item.Segment.SubtitleText;
+                try { SegmentShown?.Invoke(item.Segment.SubtitleText); }
+                catch (Exception ex) { Log.Warning($"[PublicApi] SegmentShown 回调异常: {ex.Message}"); }
 
                 if (item.Clip != null)
                 {
