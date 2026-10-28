@@ -147,6 +147,22 @@ namespace ChillAIMod
         private Vector2 _scrollPosition = Vector2.zero;
 
         private string _playerInput = "";
+        // ── 聊天记录（气泡） ─────────────────────────────────────
+        private sealed class ChatBubble
+        {
+            public bool IsUser;
+            public string Text;
+        }
+
+        private readonly List<ChatBubble> _chatLog = new List<ChatBubble>();
+        private Vector2 _chatScroll = Vector2.zero;
+        private bool _chatScrollToBottom;
+        private GUIStyle _bubbleUserStyle;
+        private GUIStyle _bubbleAiStyle;
+        private Texture2D _bubbleUserTex;
+        private Texture2D _bubbleAiTex;
+        private int _bubbleStyleFontSize = -1;
+        private const int ChatLogMaxEntries = 400;
         private bool _isProcessing = false;
         private bool _isResizing = false; // 新增：拖拽调整大小状态
 
@@ -391,6 +407,7 @@ Write every reply as a sequence of SHORT lines. Each line is exactly:
                 Log.Info(">>> 实验性分层记忆系统已启用 <<<");
             }
 
+            LoadChatLog();
             Log.Info($">>> AIMod V{AIChat.Version.VersionString}  已加载 <<<");
         }
 
@@ -964,6 +981,11 @@ Write every reply as a sequence of SHORT lines. Each line is exactly:
             }
             // ================= 设置面板结束 =================
 
+            // === 聊天记录区域 ===
+            GUILayout.Space(8);
+            GUILayout.Label("<b>聊天记录：</b>");
+            DrawChatHistory(dynamicFontSize, elementHeight);
+
             // === 对话区域 ===
             GUILayout.Space(10);
             GUILayout.Label("<b>与聪音对话：</b>");
@@ -971,8 +993,8 @@ Write every reply as a sequence of SHORT lines. Each line is exactly:
             GUI.backgroundColor = Color.white;
 
             // 动态计算输入框高度
-            float dynamicInputHeight = _windowRect.height - (elementHeight * 3.5f);
-            dynamicInputHeight = Mathf.Clamp(dynamicInputHeight, 50f, Screen.height * 0.8f);
+            float dynamicInputHeight = _windowRect.height * 0.22f;
+            dynamicInputHeight = Mathf.Clamp(dynamicInputHeight, 60f, 160f);
 
             GUIStyle largeInputStyle = new GUIStyle(GUI.skin.textArea);
             largeInputStyle.fontSize = (int)(dynamicFontSize * 1.4f);
@@ -1151,6 +1173,8 @@ Write every reply as a sequence of SHORT lines. Each line is exactly:
 
             _abortCurrentConversation = false;
 
+            AppendChat(true, prompt);
+
             // 1. 获取并处理 UI
             if (_cachedCanvas == null) _cachedCanvas = GameObject.Find("Canvas");
             if (_cachedCanvas == null)
@@ -1307,6 +1331,8 @@ Write every reply as a sequence of SHORT lines. Each line is exactly:
                         }
                     };
                 }
+
+                foreach (var chatSeg in segments) AppendChat(false, chatSeg.SubtitleText);
 
                 string emotionTag = segments[0].EmotionTag;
                 string voiceText = string.Join("", segments.ConvertAll(s => s.VoiceText).ToArray());
@@ -1540,6 +1566,144 @@ Write every reply as a sequence of SHORT lines. Each line is exactly:
                 if (target != null) target.text = _statusBaseText + new string('.', phase);
                 yield return new WaitForSecondsRealtime(0.5f);
                 phase = (phase + 1) % 4;   // 0 -> 1 -> 2 -> 3 -> 回到 0（清空）
+            }
+        }
+
+        // ── 聊天记录：数据 & 绘制 ────────────────────────────────
+        private string ChatLogPath()
+        {
+            string dir = Path.Combine(BepInEx.Paths.ConfigPath, "ChillAIMod");
+            Directory.CreateDirectory(dir);
+            return Path.Combine(dir, "chatlog.tsv");
+        }
+
+        void AppendChat(bool isUser, string text)
+        {
+            if (string.IsNullOrWhiteSpace(text)) return;
+            _chatLog.Add(new ChatBubble { IsUser = isUser, Text = text.Trim() });
+            while (_chatLog.Count > ChatLogMaxEntries) _chatLog.RemoveAt(0);
+            _chatScrollToBottom = true;
+            if (_chatLog.Count % 8 == 0) SaveChatLog();
+        }
+
+        void SaveChatLog()
+        {
+            try
+            {
+                var sb = new StringBuilder();
+                foreach (var b in _chatLog)
+                    sb.Append(b.IsUser ? "U" : "A").Append('\t')
+                      .Append(b.Text.Replace("\t", " ").Replace("\r", " ").Replace("\n", " "))
+                      .Append('\n');
+                File.WriteAllText(ChatLogPath(), sb.ToString(), new UTF8Encoding(false));
+            }
+            catch (Exception ex) { Log.Warning($"[ChatLog] 保存失败: {ex.Message}"); }
+        }
+
+        void LoadChatLog()
+        {
+            try
+            {
+                string path = ChatLogPath();
+                if (!File.Exists(path)) return;
+                foreach (var line in File.ReadAllLines(path, Encoding.UTF8))
+                {
+                    int tab = line.IndexOf('\t');
+                    if (tab <= 0) continue;
+                    _chatLog.Add(new ChatBubble
+                    {
+                        IsUser = line[0] == 'U',
+                        Text = line.Substring(tab + 1),
+                    });
+                }
+                while (_chatLog.Count > ChatLogMaxEntries) _chatLog.RemoveAt(0);
+                _chatScrollToBottom = true;
+                Log.Info($"[ChatLog] 载入 {_chatLog.Count} 条聊天记录");
+            }
+            catch (Exception ex) { Log.Warning($"[ChatLog] 载入失败: {ex.Message}"); }
+        }
+
+        static Texture2D MakeRoundedTexture(int size, int radius, Color fill)
+        {
+            var tex = new Texture2D(size, size, TextureFormat.ARGB32, false);
+            tex.wrapMode = TextureWrapMode.Clamp;
+            var clear = new Color(0f, 0f, 0f, 0f);
+            for (int y = 0; y < size; y++)
+            {
+                for (int x = 0; x < size; x++)
+                {
+                    int cx = Mathf.Clamp(x, radius, size - radius - 1);
+                    int cy = Mathf.Clamp(y, radius, size - radius - 1);
+                    float dx = x - cx, dy = y - cy;
+                    bool inside = dx * dx + dy * dy <= radius * radius + 0.5f;
+                    tex.SetPixel(x, y, inside ? fill : clear);
+                }
+            }
+            tex.Apply();
+            return tex;
+        }
+
+        void EnsureBubbleStyles(int fontSize)
+        {
+            if (_bubbleUserStyle != null && _bubbleStyleFontSize == fontSize) return;
+
+            if (_bubbleUserTex == null) _bubbleUserTex = MakeRoundedTexture(48, 14, new Color(0.26f, 0.42f, 0.78f, 0.95f));
+            if (_bubbleAiTex == null) _bubbleAiTex = MakeRoundedTexture(48, 14, new Color(0.22f, 0.22f, 0.25f, 0.95f));
+
+            _bubbleUserStyle = new GUIStyle(GUI.skin.label)
+            {
+                fontSize = fontSize,
+                wordWrap = true,
+                alignment = TextAnchor.UpperLeft,
+                padding = new RectOffset(fontSize, fontSize, fontSize / 2, fontSize / 2),
+                border = new RectOffset(14, 14, 14, 14),
+                normal = { textColor = Color.white, background = _bubbleUserTex },
+                richText = true,
+            };
+            _bubbleAiStyle = new GUIStyle(GUI.skin.label)
+            {
+                fontSize = fontSize,
+                wordWrap = true,
+                alignment = TextAnchor.UpperLeft,
+                padding = new RectOffset(fontSize, fontSize, fontSize / 2, fontSize / 2),
+                border = new RectOffset(14, 14, 14, 14),
+                normal = { textColor = Color.white, background = _bubbleAiTex },
+                richText = true,
+            };
+            _bubbleStyleFontSize = fontSize;
+        }
+
+        void DrawChatHistory(int fontSize, float elementHeight)
+        {
+            EnsureBubbleStyles(fontSize);
+
+            float logHeight = Mathf.Clamp(_windowRect.height * 0.42f, 120f, Screen.height * 0.55f);
+            _chatScroll = GUILayout.BeginScrollView(_chatScroll, false, true, GUILayout.Height(logHeight));
+
+            if (_chatLog.Count == 0)
+            {
+                GUILayout.Label("（还没有对话）");
+            }
+            else
+            {
+                float maxBubbleWidth = Mathf.Max(120f, _windowRect.width * 0.72f);
+                foreach (var bubble in _chatLog)
+                {
+                    GUILayout.BeginHorizontal();
+                    if (bubble.IsUser) GUILayout.FlexibleSpace();
+                    GUILayout.Label(bubble.Text, bubble.IsUser ? _bubbleUserStyle : _bubbleAiStyle, GUILayout.MaxWidth(maxBubbleWidth));
+                    if (!bubble.IsUser) GUILayout.FlexibleSpace();
+                    GUILayout.EndHorizontal();
+                    GUILayout.Space(fontSize * 0.3f);
+                }
+            }
+
+            GUILayout.EndScrollView();
+
+            if (_chatScrollToBottom)
+            {
+                _chatScroll.y = 1000000f;
+                _chatScrollToBottom = false;
             }
         }
 
@@ -2032,6 +2196,7 @@ Write every reply as a sequence of SHORT lines. Each line is exactly:
         void OnApplicationQuit()
         {
             Instance = null;
+            SaveChatLog();
             StopContinuousCall();
             Log.Info("[Chill AI Mod] 退出中...");
             
